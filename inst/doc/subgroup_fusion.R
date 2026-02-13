@@ -26,7 +26,7 @@ X.test = lapply(1:k, function(k.i) matrix(rnorm(n.group*p),n.group, p)) # covari
 y.test = sapply(1:k, function(k.i) X.test[[k.i]] %*% beta[,k.i] + rnorm(n.group, 0, sigma)) # response
 
 ## ------------------------------------------------------------------------
-library(fuser)
+library(fuserplus)
 library(ggplot2)
 
 # Pairwise Fusion strength hyperparameters (tau(k,k'))
@@ -75,12 +75,10 @@ ggplot(plotting.frame, aes(x=Y.Test, y=Y.Predict, colour=Group)) +
 
 
 ## ------------------------------------------------------------------------
-# Generate block diagonal matrices for L2 fusion approach
-transformed.data = generateBlockDiagonalMatrices(X, y, groups, G)
-
 # Use L2 fusion to estimate betas (with near-optimal information sharing among groups)
-beta.estimate = fusedL2DescentGLMNet(transformed.data$X, transformed.data$X.fused, 
-                                     transformed.data$Y, groups, lambda=c(0,0.001,0.1,1),
+beta.estimate = fusedL2DescentGLMNet(X, y, groups,
+                                     lambda=c(0,0.001,0.1,1),
+                                     G=G,
                                      gamma=0.001)
 
 # Returns a beta matrix for each lambda value, so we extract the one we think is optimal.
@@ -113,5 +111,4 @@ correlation = round(cor(c(y.test), c(y.predict)), digits=2)
 ggplot(plotting.frame, aes(x=Y.Test, y=Y.Predict, colour=Group)) +
   geom_point() +
   annotate('text', x=0.5,y=2.5, label=paste('Pearson Cor.:', correlation))
-
 

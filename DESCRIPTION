@@ -2,12 +2,8 @@ Package: fuserplus
 Title: Fused Lasso for High-Dimensional Regression over Groups
 Version: 0.1.0
 Authors@R: c(
-        person("Frank", "Dondelinger", role = c("aut"),
-               comment = "Original fuser package author"),
-        person("Olivier", "Wilkinson", role = c("aut"),
-               comment = "Original fuser package author"),
-        person("Fuserplus", "Maintainers",
-               email = "maintainers@fuserplus.dev", role = c("aut", "cre"))
+        person("EngineerDanny", "",
+               email = "agyapongdaniel7777@gmail.com", role = c("aut", "cre"))
     )
 Description: Enables high-dimensional penalized regression across heterogeneous 
     subgroups. Fusion penalties are used to share information about the linear 
@@ -23,7 +19,7 @@ Imports: Matrix, irlba, Rcpp, glmnet, RSpectra
 LinkingTo: Rcpp, RcppEigen
 VignetteBuilder: knitr
 NeedsCompilation: yes
-Maintainer: Fuserplus Maintainers <maintainers@fuserplus.dev>
+Maintainer: EngineerDanny <agyapongdaniel7777@gmail.com>
 Repository: GitHub
 URL: https://github.com/EngineerDanny/fuserplus
 BugReports: https://github.com/EngineerDanny/fuserplus/issues

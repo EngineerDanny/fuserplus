@@ -1,10 +1,10 @@
 ---
-title: "Using the fuser package for prediction over subgroups"
-author: "Frank Dondelinger"
+title: "Using the fuserplus package for prediction over subgroups"
+author: "EngineerDanny"
 date: "`r Sys.Date()`"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{Fuser Subgroup Prediction}
+  %\VignetteIndexEntry{Fuserplus Subgroup Prediction}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 references:
@@ -20,7 +20,7 @@ references:
     year: 2016
 ---
 
-The `fuser` package implements l1 penalised regression with fusion over subgroups, as described in @dondelinger_16. The fusion penalties allow for information sharing across regression parameters for different subgroups in heterogeneous datasets. Currently, the functionality of the package is limited to estimating the linear coefficients, although we intend to extend this with functions for prediction, cross-validation and visualization.
+The `fuserplus` package implements l1 penalised regression with fusion over subgroups, as described in @dondelinger_16. The fusion penalties allow for information sharing across regression parameters for different subgroups in heterogeneous datasets.
 
 The package implements l1 and l2 fusion penalties; l1 penalization is optimized via a proximal gradient algorithm, while l2 penalization uses a reformulation of the model to apply the `glmnet` package for estimation.
 
@@ -61,7 +61,7 @@ y.test = sapply(1:k, function(k.i) X.test[[k.i]] %*% beta[,k.i] + rnorm(n.group,
 We use the function `fusedLassoProximal` to estimate the linear coefficients via an l1 fusion penalty.
 
 ```{r}
-library(fuser)
+library(fuserplus)
 library(ggplot2)
 
 # Pairwise Fusion strength hyperparameters (tau(k,k'))
@@ -75,7 +75,7 @@ beta.estimate = fusedLassoProximal(X, y, groups, lambda=0.001, tol=9e-5,
                                    num.it=2000) 
 ```
 
-Alternatively, we can use the C++ implementation of the proximal algorithm by Oliver Wilkinson. This can be faster on some systems, especially for large numbers of subgroups.
+Alternatively, we can use the compiled implementation of the proximal algorithm. This can be faster on some systems, especially for large numbers of subgroups.
 
 ```{r,eval=FALSE}
 beta.estimate = fusedLassoProximal(X, y, groups, lambda=0.001, tol=9e-5, 
@@ -120,15 +120,13 @@ ggplot(plotting.frame, aes(x=Y.Test, y=Y.Predict, colour=Group)) +
 
 ## L2 Fusion
 
-Estimating the linear coefficients via an l2 fusion penalty is done by reformatting the data in block diagonal form to fit it into the standard lasso format (via function `generateBlockDiagonalMatrices`) and then invoking the wrapper function `fusedL2DescentGLMNet` that calls the `glmnet` package.
+Estimating the linear coefficients via an l2 fusion penalty is done via the wrapper function `fusedL2DescentGLMNet`, which internally performs the required transformation and calls `glmnet`.
 
 ```{r}
-# Generate block diagonal matrices for L2 fusion approach
-transformed.data = generateBlockDiagonalMatrices(X, y, groups, G)
-
 # Use L2 fusion to estimate betas (with near-optimal information sharing among groups)
-beta.estimate = fusedL2DescentGLMNet(transformed.data$X, transformed.data$X.fused, 
-                                     transformed.data$Y, groups, lambda=c(0,0.001,0.1,1),
+beta.estimate = fusedL2DescentGLMNet(X, y, groups,
+                                     lambda=c(0,0.001,0.1,1),
+                                     G=G,
                                      gamma=0.001)
 
 # Returns a beta matrix for each lambda value, so we extract the one we think is optimal.

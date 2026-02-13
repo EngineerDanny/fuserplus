@@ -10,11 +10,11 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<meta name="author" content="Frank Dondelinger" />
+<meta name="author" content="EngineerDanny" />
 
 <meta name="date" content="2018-06-17" />
 
-<title>Using the fuser package for prediction over subgroups</title>
+<title>Using the fuserplus package for prediction over subgroups</title>
 
 
 
@@ -68,13 +68,13 @@ code > span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Inf
 
 
 
-<h1 class="title toc-ignore">Using the fuser package for prediction over subgroups</h1>
-<h4 class="author"><em>Frank Dondelinger</em></h4>
+<h1 class="title toc-ignore">Using the fuserplus package for prediction over subgroups</h1>
+<h4 class="author"><em>EngineerDanny</em></h4>
 <h4 class="date"><em>2018-06-17</em></h4>
 
 
 
-<p>The <code>fuser</code> package implements l1 penalised regression with fusion over subgroups, as described in <span class="citation">Dondelinger (2016)</span>. The fusion penalties allow for information sharing across regression parameters for different subgroups in heterogeneous datasets. Currently, the functionality of the package is limited to estimating the linear coefficients, although we intend to extend this with functions for prediction, cross-validation and visualization.</p>
+<p>The <code>fuserplus</code> package implements l1 penalised regression with fusion over subgroups, as described in <span class="citation">Dondelinger (2016)</span>. The fusion penalties allow for information sharing across regression parameters for different subgroups in heterogeneous datasets. Currently, the functionality of the package is limited to estimating the linear coefficients, although we intend to extend this with functions for prediction, cross-validation and visualization.</p>
 <p>The package implements l1 and l2 fusion penalties; l1 penalization is optimized via a proximal gradient algorithm, while l2 penalization uses a reformulation of the model to apply the <code>glmnet</code> package for estimation.</p>
 <div id="running-example" class="section level2">
 <h2>Running Example</h2>
@@ -120,7 +120,7 @@ G =<span class="st"> </span><span class="kw">matrix</span>(<span class="dv">1</s
 beta.estimate =<span class="st"> </span><span class="kw">fusedLassoProximal</span>(X, y, groups, <span class="dt">lambda=</span><span class="fl">0.001</span>, <span class="dt">tol=</span><span class="fl">9e-5</span>, 
                                    <span class="dt">gamma=</span><span class="fl">0.001</span>, G, <span class="dt">intercept=</span><span class="ot">FALSE</span>,
                                    <span class="dt">num.it=</span><span class="dv">2000</span>) </code></pre></div>
-<p>Alternatively, we can use the C++ implementation of the proximal algorithm by Oliver Wilkinson. This can be faster on some systems, especially for large numbers of subgroups.</p>
+<p>Alternatively, we can use the compiled implementation of the proximal algorithm. This can be faster on some systems, especially for large numbers of subgroups.</p>
 <div class="sourceCode"><pre class="sourceCode r"><code class="sourceCode r">beta.estimate =<span class="st"> </span><span class="kw">fusedLassoProximal</span>(X, y, groups, <span class="dt">lambda=</span><span class="fl">0.001</span>, <span class="dt">tol=</span><span class="fl">9e-5</span>, 
                                    <span class="dt">gamma=</span><span class="fl">0.001</span>, G, <span class="dt">intercept=</span><span class="ot">FALSE</span>,
                                    <span class="dt">num.it=</span><span class="dv">2000</span>, <span class="dt">c.flag=</span><span class="ot">TRUE</span>) </code></pre></div>

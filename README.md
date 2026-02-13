@@ -1,5 +1,5 @@
 # fuserplus
-Fused lasso for high-dimensional regression over groups. This package implements the model described in [Dondelinger et al. (2016)](https://arxiv.org/abs/1611.00953).
+Fused lasso for high-dimensional regression over groups.
 
 `fuserplus` provides L1/L2 fusion estimators and multiple L1 solver backends:
 `operator`, `operator_ws`, `dfs_chain`, `chain_specialized`, and `dense_sort`.
