@@ -1,6 +1,0 @@
-0000000000000000000000000000000000000000 45527178f0c88a0b16a62bb393f95dd217a9d5b4 EngineerDanny <agyapongdaniel7777@gmail.com> 1770773445 -0700	branch: Created from HEAD
-45527178f0c88a0b16a62bb393f95dd217a9d5b4 8b4d7b77de931bc3848a0cfd20a914e8ac3c2452 EngineerDanny <agyapongdaniel7777@gmail.com> 1770773470 -0700	commit: Add benchmarking scripts for L1 and L2 fusion methods
-8b4d7b77de931bc3848a0cfd20a914e8ac3c2452 2a33a718d1fdab7d82abe410bb139622772c9bbe EngineerDanny <agyapongdaniel7777@gmail.com> 1770981051 -0700	commit: Add dense-sort L1 fusion solver and DFS-chain approximation for L1 fused regression
-2a33a718d1fdab7d82abe410bb139622772c9bbe f11c69c493e6c42d8e700eded2b99073ae2c40f6 EngineerDanny <agyapongdaniel7777@gmail.com> 1771004232 -0700	commit: Unify L1 solver dispatch and route benchmark through wrapper
-f11c69c493e6c42d8e700eded2b99073ae2c40f6 6761d6afa394eefb1b551d0209d563ed25a07d8d EngineerDanny <agyapongdaniel7777@gmail.com> 1771004719 -0700	commit: Rename package metadata and references to fuserplus
-6761d6afa394eefb1b551d0209d563ed25a07d8d 6761d6afa394eefb1b551d0209d563ed25a07d8d EngineerDanny <agyapongdaniel7777@gmail.com> 1771004812 -0700	Branch: renamed refs/heads/optimize to refs/heads/main
