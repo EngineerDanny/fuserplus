@@ -22,3 +22,6 @@ src/*.dSYM/
 AGENT.md
 
 .git_backup_*
+
+# Generated package checksum file
+MD5
