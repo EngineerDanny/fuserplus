@@ -1,56 +1,107 @@
 # fuserplus
+
 Fused lasso for high-dimensional regression over groups.
 
-`fuserplus` provides L1/L2 fusion estimators and multiple L1 solver backends:
-`operator`, `operator_ws`, `dfs_chain`, `chain_specialized`, and `dense_sort`.
+`fuserplus` includes:
+- L1 fusion regression (`fusedLassoProximal`)
+- L2 fusion regression (`fusedL2DescentGLMNet`)
+- development solver variants for L1 benchmarking: `operator`, `operator_ws`, `dense_sort`, `dfs_chain`, `chain_specialized`
 
 ## Installation
 
 ```r
-library('devtools')
-install_github('EngineerDanny/fuserplus')
+install.packages("remotes")
+remotes::install_github("EngineerDanny/fuserplus")
 ```
-## Example
 
-See also the included vignette.
+## Quick Start (Package API)
 
 ```r
 library(fuserplus)
 set.seed(123)
 
-# Generate simple heterogeneous dataset
-k = 4 # number of groups
-p = 100 # number of covariates
-n.group = 15 # number of samples per group
-sigma = 0.05 # observation noise sd
-groups = rep(1:k, each=n.group) # group indicators
+k <- 4
+p <- 100
+n.group <- 15
+sigma <- 0.05
+groups <- rep(1:k, each = n.group)
 
-# sparse linear coefficients
-beta = matrix(0, p, k)
-nonzero.ind = rbinom(p*k, 1, 0.025/k) # Independent coefficients
-nonzero.shared = rbinom(p, 1, 0.025) # shared coefficients
-beta[which(nonzero.ind==1)] = rnorm(sum(nonzero.ind), 1, 0.25) 
-beta[which(nonzero.shared==1),] = rnorm(sum(nonzero.shared), -1, 0.25)
+beta <- matrix(0, p, k)
+beta[1:5, ] <- 1
 
-X = lapply(1:k, function(k.i) matrix(rnorm(n.group*p),n.group, p)) # covariates 
-y = sapply(1:k, function(k.i) X[[k.i]] %*% beta[,k.i] + rnorm(n.group, 0, sigma)) # response
-X = do.call('rbind', X)
+X <- matrix(rnorm(length(groups) * p), nrow = length(groups), ncol = p)
+y <- numeric(length(groups))
+for (g in 1:k) {
+  idx <- which(groups == g)
+  y[idx] <- X[idx, ] %*% beta[, g] + rnorm(length(idx), 0, sigma)
+}
 
-# Pairwise Fusion strength hyperparameters (tau(k,k'))
-# Same for all pairs in this example
-G = matrix(1, k, k) 
+G <- matrix(1, k, k)
 
-# Use L1 fusion to estimate betas (with near-optimal sparsity and 
-# information sharing among groups)
-beta.l1 = fusedLassoProximal(X, y, groups, lambda=0.001, tol=9e-5, 
-                             gamma=0.001, G, intercept=FALSE,
-                             num.it=2000) 
+beta.l1 <- fusedLassoProximal(
+  X, y, groups,
+  lambda = 1e-3, gamma = 1e-3, G = G,
+  tol = 1e-5, num.it = 2000, intercept = FALSE
+)
 
-# Use L2 fusion to estimate betas (with near-optimal information sharing among groups)
-# Note: fusedL2DescentGLMNet now accepts the original X/y/groups and performs
-# the block-diagonal transformation internally.
-beta.l2 = fusedL2DescentGLMNet(X, y, groups,
-                               lambda=0.001,
-                               G=G,
-                               gamma=0.001)
+beta.l2 <- fusedL2DescentGLMNet(
+  X, y, groups,
+  lambda = 1e-3, gamma = 1e-3, G = G
+)
 ```
+
+## How To Test Solver Variants
+
+The solver variants are currently benchmark-oriented development entry points.
+Use the benchmark scripts below to compare speed/accuracy across methods.
+
+### 1) Compare core L1 methods
+
+```bash
+Rscript scripts/benchmark_l1_dense_sort_vs_operator.R \
+  --mode sweep \
+  --methods old_l1,operator,dense_sort_scaffold,dfs_chain,chain_specialized \
+  --k_values 40,80,120,160 \
+  --reps 2 \
+  --p 300 \
+  --n_group_train 20 \
+  --n_group_test 10 \
+  --lambda 1e-3 \
+  --gamma 2.0 \
+  --num_it 700 \
+  --graph_mode dense_uniform
+```
+
+Graph modes:
+- `dense_uniform`
+- `dense_nonuniform`
+- `sparse`
+
+### 2) Compare operator vs working-set (`operator_ws`)
+
+```bash
+Rscript scripts/benchmark_l1_operator_ws.R \
+  --mode baseline \
+  --k 120 \
+  --p 100 \
+  --n_group_train 10 \
+  --n_group_test 5 \
+  --lambda 1e-3 \
+  --gamma 1e-3 \
+  --num_it 1200 \
+  --g_structure dense
+```
+
+## Run Package Tests
+
+```bash
+R -q -e "testthat::test_dir('tests/testthat')"
+```
+
+## Notes On Solver Assumptions
+
+- `dense_sort` is intended for dense complete graphs with near-uniform off-diagonal weights.
+- `dfs_chain` and `chain_specialized` are chain-based approximations for general graphs.
+- `operator` / `operator_ws` are edge-explicit methods and are the general reference paths.
+
+For detailed modeling examples, see `vignettes/subgroup_fusion.Rmd`.
