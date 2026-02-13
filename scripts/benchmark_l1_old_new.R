@@ -139,6 +139,7 @@ fit_once <- function(
   warnings_seen <- character(0)
   fit <- NULL
 
+  gc(reset = TRUE)
   t <- system.time({
     fit <- withCallingHandlers({
       if (variant == "old") {
@@ -170,10 +171,13 @@ fit_once <- function(
 
   yhat_train <- predict_from_beta(fit, data$X_train, data$groups_train)
   yhat_test <- predict_from_beta(fit, data$X_test, data$groups_test)
+  gc_after <- gc()
+  memory_mb <- sum(gc_after[, 7], na.rm = TRUE)
 
   list(
     variant = variant,
     elapsed = unname(t[["elapsed"]]),
+    memory_mb = memory_mb,
     user = unname(t[["user.self"]]),
     sys = unname(t[["sys.self"]]),
     train_rmse = rmse(data$y_train, yhat_train),
@@ -188,11 +192,12 @@ print_line <- function(x, rep_id, k, p, g_structure) {
   cat(sprintf(
     paste0(
       "RESULT variant=%s rep=%d k=%d p=%d g_structure=%s ",
-      "elapsed=%.6f user=%.6f sys=%.6f train_rmse=%.6f test_rmse=%.6f ",
+      "Elapsed time (seconds)=%.6f Memory (MB)=%.2f Test RMSE=%.6f ",
+      "user=%.6f sys=%.6f train_rmse=%.6f ",
       "test_r2=%.6f beta_rmse=%.6f warnings=%s\n"
     ),
     x$variant, rep_id, k, p, g_structure,
-    x$elapsed, x$user, x$sys, x$train_rmse, x$test_rmse,
+    x$elapsed, x$memory_mb, x$test_rmse, x$user, x$sys, x$train_rmse,
     x$test_r2, x$beta_rmse, shQuote(x$warnings)
   ))
 }
@@ -243,6 +248,7 @@ if (mode == "run") {
     p = p,
     g_structure = g_structure,
     elapsed = res$elapsed,
+    memory_mb = res$memory_mb,
     user = res$user,
     sys = res$sys,
     train_rmse = res$train_rmse,
@@ -275,6 +281,7 @@ if (mode == "baseline") {
         p = p,
         g_structure = g_structure,
         elapsed = res$elapsed,
+        memory_mb = res$memory_mb,
         user = res$user,
         sys = res$sys,
         train_rmse = res$train_rmse,
@@ -288,7 +295,7 @@ if (mode == "baseline") {
     }
   }
   run_df <- do.call(rbind, rows)
-  mean_df <- aggregate(cbind(elapsed, user, sys, train_rmse, test_rmse, test_r2, beta_rmse) ~ variant, run_df, mean)
+  mean_df <- aggregate(cbind(elapsed, memory_mb, user, sys, train_rmse, test_rmse, test_r2, beta_rmse) ~ variant, run_df, mean)
   mean_df$row_type <- "mean"
   mean_df$rep <- NA_integer_
   mean_df$k <- k
@@ -296,12 +303,14 @@ if (mode == "baseline") {
   mean_df$g_structure <- g_structure
   mean_df$warnings <- "n/a"
   out_df <- rbind(
-    run_df[, c("row_type", "variant", "rep", "k", "p", "g_structure", "elapsed", "user", "sys", "train_rmse", "test_rmse", "test_r2", "beta_rmse", "warnings")],
-    mean_df[, c("row_type", "variant", "rep", "k", "p", "g_structure", "elapsed", "user", "sys", "train_rmse", "test_rmse", "test_r2", "beta_rmse", "warnings")]
+    run_df[, c("row_type", "variant", "rep", "k", "p", "g_structure", "elapsed", "memory_mb", "user", "sys", "train_rmse", "test_rmse", "test_r2", "beta_rmse", "warnings")],
+    mean_df[, c("row_type", "variant", "rep", "k", "p", "g_structure", "elapsed", "memory_mb", "user", "sys", "train_rmse", "test_rmse", "test_r2", "beta_rmse", "warnings")]
   )
   write.csv(out_df, output_csv, row.names = FALSE)
-  cat("\nMean metrics by variant:\n")
-  print(mean_df[, c("variant", "elapsed", "train_rmse", "test_rmse", "test_r2", "beta_rmse")], row.names = FALSE)
+  cat("\nMean benchmark metrics by variant:\n")
+  summary_df <- mean_df[, c("variant", "elapsed", "memory_mb", "test_rmse", "test_r2", "beta_rmse")]
+  names(summary_df) <- c("Variant", "Elapsed time (seconds)", "Memory (MB)", "Test RMSE", "Test R2", "Beta RMSE")
+  print(summary_df, row.names = FALSE)
   cat(sprintf("\nSaved summary CSV: %s\n", output_csv))
   quit(save = "no", status = 0)
 }

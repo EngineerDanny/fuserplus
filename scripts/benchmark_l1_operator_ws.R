@@ -147,6 +147,7 @@ fit_once <- function(
   warnings_seen <- character(0)
   fit <- NULL
 
+  gc(reset = TRUE)
   t <- system.time({
     fit <- withCallingHandlers({
       if (variant == "operator") {
@@ -180,11 +181,14 @@ fit_once <- function(
 
   yhat_train <- predict_from_beta(fit, data$X_train, data$groups_train)
   yhat_test <- predict_from_beta(fit, data$X_test, data$groups_test)
+  gc_after <- gc()
+  memory_mb <- sum(gc_after[, 7], na.rm = TRUE)
   screening_info <- fusedLassoProximalNewLastScreening()
 
   list(
     variant = variant,
     elapsed = unname(t[["elapsed"]]),
+    memory_mb = memory_mb,
     user = unname(t[["user.self"]]),
     sys = unname(t[["sys.self"]]),
     train_rmse = rmse(data$y_train, yhat_train),
@@ -205,12 +209,13 @@ print_line <- function(x, rep_id, k, p, g_structure) {
   cat(sprintf(
     paste0(
       "RESULT variant=%s rep=%d k=%d p=%d g_structure=%s ",
-      "elapsed=%.6f user=%.6f sys=%.6f train_rmse=%.6f test_rmse=%.6f ",
+      "Elapsed time (seconds)=%.6f Memory (MB)=%.2f Test RMSE=%.6f ",
+      "user=%.6f sys=%.6f train_rmse=%.6f ",
       "test_r2=%.6f beta_rmse=%.6f iterations=%s active_edges=%s ",
       "screened_edges=%s kept_fraction=%s warnings=%s\n"
     ),
     x$variant, rep_id, k, p, g_structure,
-    x$elapsed, x$user, x$sys, x$train_rmse, x$test_rmse,
+    x$elapsed, x$memory_mb, x$test_rmse, x$user, x$sys, x$train_rmse,
     x$test_r2, x$beta_rmse,
     as.character(x$iterations), as.character(x$active_edges),
     as.character(x$screened_edges), as.character(signif(x$kept_fraction, 4)),
@@ -275,6 +280,7 @@ if (mode == "run") {
     p = p,
     g_structure = g_structure,
     elapsed = res$elapsed,
+    memory_mb = res$memory_mb,
     user = res$user,
     sys = res$sys,
     train_rmse = res$train_rmse,
@@ -314,6 +320,7 @@ if (mode == "baseline") {
         p = p,
         g_structure = g_structure,
         elapsed = res$elapsed,
+        memory_mb = res$memory_mb,
         user = res$user,
         sys = res$sys,
         train_rmse = res$train_rmse,
@@ -336,6 +343,7 @@ if (mode == "baseline") {
   mean_df <- aggregate(
     cbind(
       elapsed, user, sys, train_rmse, test_rmse, test_r2, beta_rmse,
+      memory_mb,
       iterations, active_edges, total_edges, kept_edges, screened_edges, kept_fraction
     ) ~ variant,
     run_df,
@@ -350,21 +358,28 @@ if (mode == "baseline") {
   out_df <- rbind(
     run_df[, c(
       "row_type", "variant", "rep", "k", "p", "g_structure", "elapsed", "user", "sys",
+      "memory_mb",
       "train_rmse", "test_rmse", "test_r2", "beta_rmse", "iterations", "active_edges",
       "total_edges", "kept_edges", "screened_edges", "kept_fraction", "warnings"
     )],
     mean_df[, c(
       "row_type", "variant", "rep", "k", "p", "g_structure", "elapsed", "user", "sys",
+      "memory_mb",
       "train_rmse", "test_rmse", "test_r2", "beta_rmse", "iterations", "active_edges",
       "total_edges", "kept_edges", "screened_edges", "kept_fraction", "warnings"
     )]
   )
   write.csv(out_df, output_csv, row.names = FALSE)
-  cat("\nMean metrics by variant:\n")
-  print(mean_df[, c(
-    "variant", "elapsed", "test_rmse", "test_r2", "beta_rmse",
+  cat("\nMean benchmark metrics by variant:\n")
+  summary_df <- mean_df[, c(
+    "variant", "elapsed", "memory_mb", "test_rmse", "test_r2", "beta_rmse",
     "iterations", "active_edges", "screened_edges", "kept_fraction"
-  )], row.names = FALSE)
+  )]
+  names(summary_df) <- c(
+    "Variant", "Elapsed time (seconds)", "Memory (MB)", "Test RMSE", "Test R2", "Beta RMSE",
+    "Iterations", "Active Edges", "Screened Edges", "Kept Fraction"
+  )
+  print(summary_df, row.names = FALSE)
   cat(sprintf("\nSaved summary CSV: %s\n", output_csv))
   quit(save = "no", status = 0)
 }

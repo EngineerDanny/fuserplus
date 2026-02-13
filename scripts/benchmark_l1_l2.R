@@ -146,6 +146,7 @@ fit_once <- function(method, data, lambda, gamma, scaling, tol, num_it, c_flag) 
   warnings_seen <- character(0)
   fit <- NULL
 
+  gc(reset = TRUE)
   timed <- system.time({
     fit <- withCallingHandlers({
       if (method == "l1") {
@@ -179,10 +180,13 @@ fit_once <- function(method, data, lambda, gamma, scaling, tol, num_it, c_flag) 
 
   yhat_train <- predict_from_beta(fit, X_train, groups_train)
   yhat_test <- predict_from_beta(fit, X_test, groups_test)
+  gc_after <- gc()
+  memory_mb <- sum(gc_after[, 7], na.rm = TRUE)
 
   list(
     method = method,
     elapsed = unname(timed[["elapsed"]]),
+    memory_mb = memory_mb,
     user = unname(timed[["user.self"]]),
     sys = unname(timed[["sys.self"]]),
     train_rmse = rmse(y_train, yhat_train),
@@ -199,19 +203,22 @@ fit_once <- function(method, data, lambda, gamma, scaling, tol, num_it, c_flag) 
 print_result_line <- function(x, rep_id = NA_integer_) {
   cat(sprintf(
     paste0(
-      "RESULT method=%s rep=%s elapsed=%.6f user=%.6f sys=%.6f ",
+      "RESULT method=%s rep=%s ",
+      "Elapsed time (seconds)=%.6f Memory (MB)=%.2f Test RMSE=%.6f ",
+      "user=%.6f sys=%.6f ",
       "train_rmse=%.6f train_mae=%.6f train_r2=%.6f ",
-      "test_rmse=%.6f test_mae=%.6f test_r2=%.6f beta_rmse=%.6f warnings=%s\n"
+      "test_mae=%.6f test_r2=%.6f beta_rmse=%.6f warnings=%s\n"
     ),
     x$method,
     ifelse(is.na(rep_id), "NA", as.character(rep_id)),
     x$elapsed,
+    x$memory_mb,
+    x$test_rmse,
     x$user,
     x$sys,
     x$train_rmse,
     x$train_mae,
     x$train_r2,
-    x$test_rmse,
     x$test_mae,
     x$test_r2,
     x$beta_rmse,
@@ -271,6 +278,7 @@ if (mode == "run") {
     gamma = gamma,
     lambda = lambda,
     elapsed = res$elapsed,
+    memory_mb = res$memory_mb,
     user = res$user,
     sys = res$sys,
     train_rmse = res$train_rmse,
@@ -302,6 +310,7 @@ if (mode == "baseline") {
         gamma = gamma,
         lambda = lambda,
         elapsed = res$elapsed,
+        memory_mb = res$memory_mb,
         user = res$user,
         sys = res$sys,
         train_rmse = res$train_rmse,
@@ -319,7 +328,7 @@ if (mode == "baseline") {
   }
 
   run_df <- do.call(rbind, rows)
-  mean_df <- aggregate(cbind(elapsed, user, sys, train_rmse, train_mae, train_r2, test_rmse, test_mae, test_r2, beta_rmse) ~ method, run_df, mean)
+  mean_df <- aggregate(cbind(elapsed, memory_mb, user, sys, train_rmse, train_mae, train_r2, test_rmse, test_mae, test_r2, beta_rmse) ~ method, run_df, mean)
   mean_df$row_type <- "mean"
   mean_df$rep <- NA_integer_
   mean_df$gamma <- gamma
@@ -327,13 +336,15 @@ if (mode == "baseline") {
   mean_df$warnings <- "n/a"
 
   out_df <- rbind(
-    run_df[, c("row_type", "method", "rep", "gamma", "lambda", "elapsed", "user", "sys", "train_rmse", "train_mae", "train_r2", "test_rmse", "test_mae", "test_r2", "beta_rmse", "warnings")],
-    mean_df[, c("row_type", "method", "rep", "gamma", "lambda", "elapsed", "user", "sys", "train_rmse", "train_mae", "train_r2", "test_rmse", "test_mae", "test_r2", "beta_rmse", "warnings")]
+    run_df[, c("row_type", "method", "rep", "gamma", "lambda", "elapsed", "memory_mb", "user", "sys", "train_rmse", "train_mae", "train_r2", "test_rmse", "test_mae", "test_r2", "beta_rmse", "warnings")],
+    mean_df[, c("row_type", "method", "rep", "gamma", "lambda", "elapsed", "memory_mb", "user", "sys", "train_rmse", "train_mae", "train_r2", "test_rmse", "test_mae", "test_r2", "beta_rmse", "warnings")]
   )
 
   write.csv(out_df, output_csv, row.names = FALSE)
-  cat("\nMean metrics by method:\n")
-  print(mean_df[, c("method", "elapsed", "train_rmse", "test_rmse", "test_r2", "beta_rmse")], row.names = FALSE)
+  cat("\nMean benchmark metrics by method:\n")
+  summary_df <- mean_df[, c("method", "elapsed", "memory_mb", "test_rmse", "test_r2", "beta_rmse")]
+  names(summary_df) <- c("Method", "Elapsed time (seconds)", "Memory (MB)", "Test RMSE", "Test R2", "Beta RMSE")
+  print(summary_df, row.names = FALSE)
   cat(sprintf("\nSaved summary CSV: %s\n", output_csv))
   quit(save = "no", status = 0)
 }
@@ -352,6 +363,7 @@ if (mode == "sweep") {
           gamma = ga,
           lambda = la,
           elapsed = res$elapsed,
+          memory_mb = res$memory_mb,
           user = res$user,
           sys = res$sys,
           train_rmse = res$train_rmse,
@@ -365,8 +377,10 @@ if (mode == "sweep") {
           stringsAsFactors = FALSE
         )
         idx <- idx + 1L
-        cat(sprintf("SWEEP method=%s gamma=%g lambda=%g test_rmse=%.6f test_r2=%.6f\n",
-                    m, ga, la, res$test_rmse, res$test_r2))
+        cat(sprintf(
+          "SWEEP method=%s gamma=%g lambda=%g Elapsed time (seconds)=%.6f Memory (MB)=%.2f Test RMSE=%.6f test_r2=%.6f\n",
+          m, ga, la, res$elapsed, res$memory_mb, res$test_rmse, res$test_r2
+        ))
       }
     }
   }
@@ -381,7 +395,9 @@ if (mode == "sweep") {
   write.csv(out_df, output_csv, row.names = FALSE)
 
   cat("\nBest by test RMSE (per method):\n")
-  print(best_rows[, c("method", "gamma", "lambda", "elapsed", "test_rmse", "test_r2", "beta_rmse", "warnings")], row.names = FALSE)
+  summary_best <- best_rows[, c("method", "gamma", "lambda", "elapsed", "memory_mb", "test_rmse", "test_r2", "beta_rmse", "warnings")]
+  names(summary_best) <- c("Method", "Gamma", "Lambda", "Elapsed time (seconds)", "Memory (MB)", "Test RMSE", "Test R2", "Beta RMSE", "Warnings")
+  print(summary_best, row.names = FALSE)
   cat(sprintf("\nSaved summary CSV: %s\n", output_csv))
   quit(save = "no", status = 0)
 }

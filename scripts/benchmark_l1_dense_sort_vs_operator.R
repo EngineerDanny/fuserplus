@@ -219,6 +219,7 @@ generate_data <- function(seed, k, p, n_group_train, n_group_test, sigma, cfg) {
 fit_once <- function(method, d, cfg) {
   warnings_seen <- character(0)
   fit <- NULL
+  gc(reset = TRUE)
   t <- system.time({
     fit <- withCallingHandlers({
       if (method == "old_l1") {
@@ -288,9 +289,12 @@ fit_once <- function(method, d, cfg) {
   }
 
   yhat <- predict_from_beta(fit, d$X_test, d$groups_test)
+  gc_after <- gc()
+  memory_mb <- sum(gc_after[, 7], na.rm = TRUE)
   list(
     method = method,
     elapsed = unname(t[["elapsed"]]),
+    memory_mb = memory_mb,
     test_rmse = rmse(d$y_test, yhat),
     iterations = iter,
     active_edges = active_edges,
@@ -300,8 +304,12 @@ fit_once <- function(method, d, cfg) {
 
 print_result <- function(x, k, p, rep_id) {
   cat(sprintf(
-    "RESULT method=%s k=%d p=%d rep=%d elapsed=%.6f test_rmse=%.6f iterations=%s active_edges=%s warnings=%s\n",
-    x$method, k, p, rep_id, x$elapsed, x$test_rmse,
+    paste0(
+      "RESULT method=%s k=%d p=%d rep=%d ",
+      "Elapsed time (seconds)=%.6f Memory (MB)=%.2f Test RMSE=%.6f ",
+      "iterations=%s active_edges=%s warnings=%s\n"
+    ),
+    x$method, k, p, rep_id, x$elapsed, x$memory_mb, x$test_rmse,
     as.character(x$iterations), as.character(x$active_edges), shQuote(x$warnings)
   ))
 }
@@ -446,6 +454,7 @@ for (k in cfg$k_values) {
         p = cfg$p,
         rep = r,
         elapsed = res$elapsed,
+        memory_mb = res$memory_mb,
         test_rmse = res$test_rmse,
         iterations = res$iterations,
         active_edges = res$active_edges,
@@ -457,9 +466,14 @@ for (k in cfg$k_values) {
 }
 
 run_df <- do.call(rbind, rows)
-mean_df <- aggregate(cbind(elapsed, test_rmse, iterations, active_edges) ~ method + k + p, run_df, mean)
-cat("\nMean metrics by method and k:\n")
-print(mean_df, row.names = FALSE)
+mean_df <- aggregate(cbind(elapsed, memory_mb, test_rmse, iterations, active_edges) ~ method + k + p, run_df, mean)
+cat("\nMean benchmark metrics by method and k:\n")
+summary_df <- mean_df[, c("method", "k", "elapsed", "memory_mb", "test_rmse", "iterations", "active_edges")]
+names(summary_df) <- c(
+  "Method", "k", "Elapsed time (seconds)", "Memory (MB)", "Test RMSE",
+  "Iterations", "Active Edges"
+)
+print(summary_df, row.names = FALSE)
 
 expo_rows <- list()
 idx <- 1L
