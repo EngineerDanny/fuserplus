@@ -25,5 +25,5 @@ VignetteBuilder: knitr
 NeedsCompilation: yes
 Maintainer: Fuserplus Maintainers <maintainers@fuserplus.dev>
 Repository: GitHub
-URL: https://github.com/your-org/fuserplus
-BugReports: https://github.com/your-org/fuserplus/issues
+URL: https://github.com/EngineerDanny/fuserplus
+BugReports: https://github.com/EngineerDanny/fuserplus/issues
