@@ -173,6 +173,39 @@ print_line <- function(x, rep_id, k, p, g_structure) {
   ))
 }
 
+print_wide_tables <- function(mean_df, setting_label) {
+  variants <- as.character(mean_df$variant)
+  elapsed_vals <- setNames(mean_df$elapsed, variants)
+  memory_vals <- setNames(mean_df$memory_mb, variants)
+  rmse_vals <- setNames(mean_df$test_rmse, variants)
+
+  elapsed_tbl <- data.frame(
+    Setting = setting_label,
+    old = unname(elapsed_vals["old"]),
+    new = unname(elapsed_vals["new"]),
+    check.names = FALSE
+  )
+  memory_tbl <- data.frame(
+    Setting = setting_label,
+    old = unname(memory_vals["old"]),
+    new = unname(memory_vals["new"]),
+    check.names = FALSE
+  )
+  rmse_tbl <- data.frame(
+    Setting = setting_label,
+    old = unname(rmse_vals["old"]),
+    new = unname(rmse_vals["new"]),
+    check.names = FALSE
+  )
+
+  cat("\nElapsed time (seconds):\n")
+  print(elapsed_tbl, row.names = FALSE)
+  cat("\nMemory (MB):\n")
+  print(memory_tbl, row.names = FALSE)
+  cat("\nTest RMSE:\n")
+  print(rmse_tbl, row.names = FALSE)
+}
+
 argv <- parse_args(commandArgs(trailingOnly = TRUE))
 get_arg <- function(x, key) if (key %in% names(x)) x[[key]] else NULL
 get_opt <- function(key) {
@@ -266,10 +299,8 @@ if (mode == "baseline") {
     mean_df[, c("row_type", "variant", "rep", "k", "p", "g_structure", "elapsed", "memory_mb", "user", "sys", "train_rmse", "test_rmse", "test_r2", "beta_rmse", "warnings")]
   )
   write.csv(out_df, output_csv, row.names = FALSE)
-  cat("\nMean benchmark metrics by variant:\n")
-  summary_df <- mean_df[, c("variant", "elapsed", "memory_mb", "test_rmse", "test_r2", "beta_rmse")]
-  names(summary_df) <- c("Variant", "Elapsed time (seconds)", "Memory (MB)", "Test RMSE", "Test R2", "Beta RMSE")
-  print(summary_df, row.names = FALSE)
+  setting_label <- sprintf("k=%d,p=%d,%s", k, p, g_structure)
+  print_wide_tables(mean_df, setting_label)
   cat(sprintf("\nSaved summary CSV: %s\n", output_csv))
   quit(save = "no", status = 0)
 }
