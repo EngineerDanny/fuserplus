@@ -26,6 +26,7 @@ A named list with:
 
 - Dropped identifier/target columns from predictors:
   - `state`, `county`, `community`, `communityname`, `fold`, `ViolentCrimesPerPop`
+- Dropped groups with fewer than 2 rows (configurable in prep script)
 - Kept numeric predictors only
 - Dropped predictor columns with >20% missing values
 - Median-imputed remaining missing values
@@ -36,3 +37,6 @@ A named list with:
 ```bash
 Rscript scripts/prepare_communities_crime.R
 ```
+
+Optional 4th argument:
+- `min_group_size` (default `2`)

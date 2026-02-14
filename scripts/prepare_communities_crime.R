@@ -4,9 +4,13 @@ args <- commandArgs(trailingOnly = TRUE)
 raw_data <- if (length(args) >= 1) args[[1]] else "data/raw/communities.data"
 raw_names <- if (length(args) >= 2) args[[2]] else "data/raw/communities.names"
 out_rds <- if (length(args) >= 3) args[[3]] else "data/processed/communities_crime_l2.rds"
+min_group_size <- if (length(args) >= 4) as.integer(args[[4]]) else 2L
 
 if (!file.exists(raw_data)) stop("Missing file: ", raw_data)
 if (!file.exists(raw_names)) stop("Missing file: ", raw_names)
+if (is.na(min_group_size) || min_group_size < 1L) {
+  stop("min_group_size must be an integer >= 1")
+}
 
 name_lines <- readLines(raw_names, warn = FALSE)
 attr_lines <- grep("^@attribute\\s+", name_lines, value = TRUE)
@@ -27,7 +31,12 @@ if (length(missing_required) > 0) {
 # Keep rows with valid response and grouping key.
 d <- d[!is.na(d$state) & !is.na(d$ViolentCrimesPerPop), , drop = FALSE]
 
-# Build groups from state ids (46 states in this dataset).
+# Drop underrepresented groups to avoid singleton/sub-singleton training groups.
+state_counts <- table(as.integer(d$state))
+keep_states <- as.integer(names(state_counts[state_counts >= min_group_size]))
+d <- d[as.integer(d$state) %in% keep_states, , drop = FALSE]
+
+# Build groups from retained state ids.
 groups_raw <- as.integer(d$state)
 groups <- as.integer(factor(groups_raw, levels = sort(unique(groups_raw))))
 
@@ -87,6 +96,8 @@ out <- list(
     n = nrow(X),
     p = ncol(X),
     k = k,
+    min_group_size = min_group_size,
+    dropped_small_groups = as.integer(names(state_counts[state_counts < min_group_size])),
     dropped_feature_missing_threshold = 0.20,
     dropped_identifier_columns = drop_cols
   )
