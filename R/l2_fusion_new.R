@@ -147,6 +147,170 @@ generateBlockDiagonalMatricesNew <- function(
   ))
 }
 
+.build_l2new_augmented <- function(
+  X,
+  y,
+  groups,
+  G,
+  gamma,
+  intercept = FALSE,
+  scaling = FALSE
+) {
+  group.names <- sort(unique(groups))
+  num.groups <- length(group.names)
+
+  if (!is.matrix(G) || nrow(G) != num.groups || ncol(G) != num.groups) {
+    stop("G must be a square matrix with dimensions equal to the number of groups.")
+  }
+
+  if (intercept) {
+    X <- cbind(X, matrix(1, nrow(X), 1))
+  }
+
+  n <- nrow(X)
+  p.eff <- ncol(X)
+
+  include.fusion <- (gamma > 0)
+  if (include.fusion) {
+    edges <- which(upper.tri(G) & (G != 0), arr.ind = TRUE)
+  } else {
+    edges <- matrix(integer(0), nrow = 0, ncol = 2)
+  }
+  num.edges <- nrow(edges)
+
+  n.fusion.rows <- num.edges * p.eff
+  n.total <- n + n.fusion.rows
+  n.cols <- p.eff * num.groups
+
+  # Build response as numeric vector to avoid sparse response overhead in glmnet.
+  y.aug <- numeric(n.total)
+
+  # Base block-diagonal triplets.
+  i.list <- vector("list", num.groups)
+  j.list <- vector("list", num.groups)
+  x.list <- vector("list", num.groups)
+
+  row.start <- 1L
+  for (g.idx in seq_len(num.groups)) {
+    group.inds <- which(groups == group.names[g.idx])
+    n.g <- length(group.inds)
+    row.range <- row.start:(row.start + n.g - 1L)
+    col.base <- (g.idx - 1L) * p.eff
+
+    block <- X[group.inds, , drop = FALSE]
+    if (scaling) {
+      scale.factor <- sqrt(n.g)
+      block <- block / scale.factor
+      y.aug[row.range] <- y[group.inds] / scale.factor
+    } else {
+      y.aug[row.range] <- y[group.inds]
+    }
+
+    block.vec <- c(t(block))
+    ii <- rep(row.range, each = p.eff)
+    jj <- rep(col.base + seq_len(p.eff), times = n.g)
+    keep <- (block.vec != 0)
+
+    i.list[[g.idx]] <- ii[keep]
+    j.list[[g.idx]] <- jj[keep]
+    x.list[[g.idx]] <- block.vec[keep]
+
+    row.start <- row.start + n.g
+  }
+
+  i.base <- unlist(i.list, use.names = FALSE)
+  j.base <- unlist(j.list, use.names = FALSE)
+  x.base <- unlist(x.list, use.names = FALSE)
+
+  if (!include.fusion || num.edges == 0L) {
+    X.aug <- Matrix::sparseMatrix(
+      i = i.base,
+      j = j.base,
+      x = x.base,
+      dims = c(n.total, n.cols)
+    )
+    return(list(
+      X_aug = X.aug,
+      y_aug = y.aug,
+      p_eff = p.eff,
+      num_groups = num.groups,
+      group.names = group.names,
+      num_edges = num.edges
+    ))
+  }
+
+  feat.idx <- seq_len(p.eff)
+  if (intercept) {
+    feat.idx <- feat.idx[-length(feat.idx)] # Do not fuse intercept.
+  }
+
+  if (length(feat.idx) == 0L) {
+    X.aug <- Matrix::sparseMatrix(
+      i = i.base,
+      j = j.base,
+      x = x.base,
+      dims = c(n.total, n.cols)
+    )
+    return(list(
+      X_aug = X.aug,
+      y_aug = y.aug,
+      p_eff = p.eff,
+      num_groups = num.groups,
+      group.names = group.names,
+      num_edges = num.edges
+    ))
+  }
+
+  # Build fusion triplets directly at final augmented row offsets.
+  nnz.f <- 2L * num.edges * length(feat.idx)
+  i.f <- integer(nnz.f)
+  j.f <- integer(nnz.f)
+  x.f <- numeric(nnz.f)
+  ptr <- 1L
+
+  # Match previous scaling semantics: sqrt(gamma * (n + n.fusion.rows)).
+  fusion.scale <- sqrt(gamma * (n + n.fusion.rows))
+
+  for (e.idx in seq_len(num.edges)) {
+    g.i <- edges[e.idx, 1]
+    g.j <- edges[e.idx, 2]
+    tau <- G[g.i, g.j]
+    coeff <- sqrt(tau) * fusion.scale
+
+    rows <- n + (e.idx - 1L) * p.eff + feat.idx
+    cols.i <- (g.i - 1L) * p.eff + feat.idx
+    cols.j <- (g.j - 1L) * p.eff + feat.idx
+    m <- length(feat.idx)
+
+    idx1 <- ptr:(ptr + m - 1L)
+    idx2 <- (ptr + m):(ptr + 2L * m - 1L)
+    i.f[idx1] <- rows
+    j.f[idx1] <- cols.i
+    x.f[idx1] <- coeff
+    i.f[idx2] <- rows
+    j.f[idx2] <- cols.j
+    x.f[idx2] <- -coeff
+    ptr <- ptr + 2L * m
+  }
+
+  X.aug <- Matrix::sparseMatrix(
+    i = c(i.base, i.f),
+    j = c(j.base, j.f),
+    x = c(x.base, x.f),
+    dims = c(n.total, n.cols)
+  )
+  X.aug <- Matrix::drop0(X.aug)
+
+  list(
+    X_aug = X.aug,
+    y_aug = y.aug,
+    p_eff = p.eff,
+    num_groups = num.groups,
+    group.names = group.names,
+    num_edges = num.edges
+  )
+}
+
 
 #' Optimise fused L2 with active-edge transformed matrices.
 #'
@@ -179,23 +343,18 @@ fusedL2DescentGLMNetNew <- function(
     G <- matrix(1, k, k)
   }
 
-  include.fusion <- (gamma > 0)
-  transformed.data <- generateBlockDiagonalMatricesNew(
-    X, y, groups, G,
-    scaling = scaling,
-    include.fusion = include.fusion
+  transformed <- .build_l2new_augmented(
+    X = X,
+    y = y,
+    groups = groups,
+    G = G,
+    gamma = gamma,
+    scaling = scaling
   )
-  transformed.x <- transformed.data$X
-  transformed.x.f <- transformed.data$X.fused
-  transformed.y <- transformed.data$Y
-
-  if (include.fusion && nrow(transformed.x.f) > 0) {
-    transformed.x.f <- transformed.x.f * sqrt(gamma * (nrow(transformed.x) + nrow(transformed.x.f)))
-    transformed.x <- rbind(transformed.x, transformed.x.f)
-  }
-
-  group.names <- sort(unique(groups))
-  num.groups <- length(group.names)
+  transformed.x <- transformed$X_aug
+  transformed.y <- transformed$y_aug
+  num.groups <- transformed$num_groups
+  group.names <- transformed$group.names
 
   if (scaling) {
     correction.factor <- num.groups / nrow(transformed.x)
@@ -215,7 +374,7 @@ fusedL2DescentGLMNetNew <- function(
   coef.temp <- coef(glmnet.result, s = lambda * correction.factor)
   beta.mat <- matrix(
     coef.temp[2:length(coef.temp)],
-    nrow = ncol(transformed.x) / num.groups,
+    nrow = transformed$p_eff,
     ncol = num.groups
   )
   colnames(beta.mat) <- group.names
