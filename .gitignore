@@ -25,3 +25,7 @@ AGENT.md
 
 # Generated package checksum file
 MD5
+
+# build artifacts
+build/
+figures/
