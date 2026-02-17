@@ -29,3 +29,20 @@ MD5
 # build artifacts
 build/
 figures/
+
+# generated dataset downloads (keep hand-curated top-level files in data/raw)
+data/raw/*/
+!data/raw/communities/
+!data/raw/communities/communities.data
+!data/raw/communities/communities.names
+
+# generated grouped regression outputs (per-dataset folders)
+data/processed/**/grouped_regression.rds
+data/processed/**/grouped_regression.csv
+data/processed/**/grouped_regression_meta.json
+data/processed/**/grouped_regression_g_*_edges.csv
+data/processed/**/communities_crime_l2.csv
+data/processed/grouped_regression_datasets_summary.csv
+
+# generated benchmark summaries
+scripts/atime_*_summary.csv
