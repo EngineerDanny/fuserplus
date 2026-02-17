@@ -5,7 +5,10 @@ suppressPackageStartupMessages({
   library(atime)
 })
 
-source("R/l2_fusion_new.R")
+source("R/l1_fusion_new_utils.R")
+source("R/l1_fusion_operator_new.R")
+source("R/l1_fusion_dfs_chain.R")
+source("R/l1_fusion_chain_specialized.R")
 
 DEFAULTS <- list(
   seed = 20260206L,
@@ -15,11 +18,18 @@ DEFAULTS <- list(
   sigma = 0.05,
   lambda = 1e-3,
   gamma = 1e-3,
+  mu = 1e-4,
+  tol = 1e-4,
+  num_it = 1200L,
   scaling = FALSE,
+  intercept = FALSE,
+  conserve_memory = FALSE,
+  edge_block = 256L,
+  c_flag_old = FALSE,
   g_structure = "sparse_chain",    # dense | sparse_chain
   times = 3L,
   seconds_limit = Inf,
-  out_prefix = "atime_l2"
+  out_prefix = "atime_l1_variants"
 )
 
 parse_args <- function(argv) {
@@ -28,7 +38,7 @@ parse_args <- function(argv) {
   while (i <= length(argv)) {
     key <- argv[[i]]
     if (!startsWith(key, "--")) stop(sprintf("Unexpected argument: %s", key))
-    key <- substring(key, 3)
+    key <- substring(key, 3L)
     if (i == length(argv) || startsWith(argv[[i + 1L]], "--")) {
       out[[key]] <- "TRUE"
       i <- i + 1L
@@ -55,14 +65,16 @@ as_num_vec <- function(x) {
 
 build_G <- function(k, structure) {
   if (structure == "dense") {
-    return(matrix(1, k, k))
+    G <- matrix(1, k, k)
+    diag(G) <- 0
+    return(G)
   }
   if (structure == "sparse_chain") {
     G <- matrix(0, k, k)
-    if (k > 1) {
-      for (i in 1:(k - 1)) {
-        G[i, i + 1] <- 1
-        G[i + 1, i] <- 1
+    if (k > 1L) {
+      for (i in 1:(k - 1L)) {
+        G[i, i + 1L] <- 1
+        G[i + 1L, i] <- 1
       }
     }
     return(G)
@@ -80,7 +92,17 @@ summarize_atime <- function(obj) {
     stringsAsFactors = FALSE,
     check.names = FALSE
   )
-  out[order(out$k, out$Method), ]
+
+  method_levels <- c(
+    "Legacy Full-Edge (old_l1)",
+    "Full-Edge Operator",
+    "Chain-Specialized (Approx)"
+  )
+  out$Method <- factor(out$Method, levels = method_levels)
+  out <- out[order(out$k, out$Method), , drop = FALSE]
+  out$Method <- as.character(out$Method)
+  rownames(out) <- NULL
+  out
 }
 
 print_wide_tables <- function(df, header) {
@@ -112,7 +134,14 @@ n_group_train <- as.integer(get_opt("n_group_train"))
 sigma <- as.numeric(get_opt("sigma"))
 lambda <- as.numeric(get_opt("lambda"))
 gamma <- as.numeric(get_opt("gamma"))
+mu <- as.numeric(get_opt("mu"))
+tol <- as.numeric(get_opt("tol"))
+num_it <- as.integer(get_opt("num_it"))
 scaling <- as_bool(get_opt("scaling"), FALSE)
+intercept <- as_bool(get_opt("intercept"), FALSE)
+conserve_memory <- as_bool(get_opt("conserve_memory"), FALSE)
+edge_block <- as.integer(get_opt("edge_block"))
+c_flag_old <- as_bool(get_opt("c_flag_old"), FALSE)
 g_structure <- as.character(get_opt("g_structure"))
 times <- as.integer(get_opt("times"))
 seconds_limit <- as.numeric(get_opt("seconds_limit"))
@@ -122,20 +151,30 @@ if (!dir.exists("inst/figures")) dir.create("inst/figures", recursive = TRUE)
 if (!dir.exists("build")) dir.create("build", recursive = TRUE)
 
 # -----------------------------
-# L2 atime benchmark (Legacy Full-Edge vs Active-Edge)
+# L1 atime benchmark (old_l1 vs operator vs chain_specialized)
 # -----------------------------
-l2_obj <- atime::atime(
+l1_obj <- atime::atime(
   N = k_values,
   times = times,
   seconds.limit = seconds_limit,
   N.env.parent = environment(),
   setup = {
-    set.seed(seed + 10000 + N)
+    set.seed(seed + 5000L + N)
     k <- N
     groups <- rep(seq_len(k), each = n_group_train)
     n <- length(groups)
     X <- matrix(rnorm(n * p), nrow = n, ncol = p)
-    beta <- matrix(rnorm(p * k, sd = 0.15), p, k)
+
+    beta <- matrix(0, nrow = p, ncol = k)
+    nonzero <- rbinom(p * k, 1, 0.02 / max(1L, k))
+    if (sum(nonzero) > 0L) {
+      beta[which(nonzero == 1L)] <- rnorm(sum(nonzero), 0.8, 0.25)
+    }
+    shared <- rbinom(p, 1, 0.02)
+    if (sum(shared) > 0L) {
+      beta[which(shared == 1L), ] <- rnorm(sum(shared), -0.8, 0.25)
+    }
+
     y <- numeric(n)
     for (g in seq_len(k)) {
       idx <- which(groups == g)
@@ -146,36 +185,63 @@ l2_obj <- atime::atime(
   expr.list = setNames(
     list(
       quote(
-      fusedL2DescentGLMNet(
-        X, y, groups,
-        lambda = lambda, gamma = gamma, G = G, scaling = scaling
-      )
-    ),
+        fusedLassoProximal(
+          X, y, groups,
+          lambda = lambda, gamma = gamma, G = G,
+          mu = mu, tol = tol, num.it = num_it,
+          c.flag = c_flag_old,
+          intercept = intercept,
+          conserve.memory = conserve_memory,
+          scaling = scaling
+        )
+      ),
       quote(
-      fusedL2DescentGLMNetNew(
-        X, y, groups,
-        lambda = lambda, gamma = gamma, G = G, scaling = scaling
+        fusedLassoProximalNewOperator(
+          X, y, groups,
+          lambda = lambda, gamma = gamma, G = G,
+          mu = mu, tol = tol, num.it = num_it,
+          c.flag = FALSE,
+          intercept = intercept,
+          conserve.memory = conserve_memory,
+          scaling = scaling,
+          edge.block = edge_block
+        )
+      ),
+      quote(
+        fusedLassoProximalChainSpecialized(
+          X, y, groups,
+          lambda = lambda, gamma = gamma, G = G,
+          mu = mu, tol = tol, num.it = num_it,
+          c.flag = FALSE,
+          intercept = intercept,
+          conserve.memory = conserve_memory,
+          scaling = scaling,
+          edge.block = edge_block
+        )
       )
-    )
     ),
-    c("Legacy Full-Edge", "Active-Edge (Ours)")
+    c(
+      "Legacy Full-Edge (old_l1)",
+      "Full-Edge Operator",
+      "Chain-Specialized (Approx)"
+    )
   )
 )
 
-l2_df <- summarize_atime(l2_obj)
-l2_summary_file <- sprintf("build/%s_l2_summary.csv", out_prefix)
-write.csv(l2_df, l2_summary_file, row.names = FALSE)
-l2_rds_file <- sprintf("build/%s_l2_atime_obj.rds", out_prefix)
-saveRDS(l2_obj, l2_rds_file)
+l1_df <- summarize_atime(l1_obj)
+l1_summary_file <- sprintf("build/%s_summary.csv", out_prefix)
+write.csv(l1_df, l1_summary_file, row.names = FALSE)
+l1_rds_file <- sprintf("build/%s_atime_obj.rds", out_prefix)
+saveRDS(l1_obj, l1_rds_file)
 
-l2_plot <- plot(l2_obj) +
+l1_plot <- plot(l1_obj) +
   ggplot2::labs(x = "k (number of subsets)")
-l2_file <- sprintf("inst/figures/%s_l2_atime.png", out_prefix)
-ggplot2::ggsave(l2_file, l2_plot, width = 5.0, height = 3.4, dpi = 500)
+l1_file <- sprintf("inst/figures/%s_atime.png", out_prefix)
+ggplot2::ggsave(l1_file, l1_plot, width = 5.0, height = 3.4, dpi = 500)
 
-print_wide_tables(l2_df, "L2-fusion solver: atime (Legacy Full-Edge vs Active-Edge)")
+print_wide_tables(l1_df, "L1-fusion solver: atime (old_l1 vs operator vs chain_specialized)")
 
 cat("\nSaved files:\n")
-cat(sprintf("- %s\n", l2_summary_file))
-cat(sprintf("- %s\n", l2_rds_file))
-cat(sprintf("- %s\n", l2_file))
+cat(sprintf("- %s\n", l1_summary_file))
+cat(sprintf("- %s\n", l1_rds_file))
+cat(sprintf("- %s\n", l1_file))
