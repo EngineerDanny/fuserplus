@@ -1,8 +1,8 @@
 #!/usr/bin/env Rscript
 
 args <- commandArgs(trailingOnly = TRUE)
-raw_data <- if (length(args) >= 1) args[[1]] else "data/raw/communities.data"
-raw_names <- if (length(args) >= 2) args[[2]] else "data/raw/communities.names"
+raw_data <- if (length(args) >= 1) args[[1]] else "data/raw/communities/communities.data"
+raw_names <- if (length(args) >= 2) args[[2]] else "data/raw/communities/communities.names"
 out_rds <- if (length(args) >= 3) args[[3]] else "data/processed/communities_crime_l2.rds"
 min_group_size <- if (length(args) >= 4) as.integer(args[[4]]) else 2L
 

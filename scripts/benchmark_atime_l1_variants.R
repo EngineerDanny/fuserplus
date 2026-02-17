@@ -94,9 +94,9 @@ summarize_atime <- function(obj) {
   )
 
   method_levels <- c(
-    "Legacy Full-Edge (old_l1)",
-    "Full-Edge Operator",
-    "Chain-Specialized (Approx)"
+    "Legacy Full-Edge",
+    "Operator (Ours)",
+    "Chain Approx. (Ours)"
   )
   out$Method <- factor(out$Method, levels = method_levels)
   out <- out[order(out$k, out$Method), , drop = FALSE]
@@ -221,9 +221,9 @@ l1_obj <- atime::atime(
       )
     ),
     c(
-      "Legacy Full-Edge (old_l1)",
-      "Full-Edge Operator",
-      "Chain-Specialized (Approx)"
+      "Legacy Full-Edge",
+      "Operator (Ours)",
+      "Chain Approx. (Ours)"
     )
   )
 )
@@ -239,7 +239,7 @@ l1_plot <- plot(l1_obj) +
 l1_file <- sprintf("inst/figures/%s_atime.png", out_prefix)
 ggplot2::ggsave(l1_file, l1_plot, width = 5.0, height = 3.4, dpi = 500)
 
-print_wide_tables(l1_df, "L1-fusion solver: atime (old_l1 vs operator vs chain_specialized)")
+print_wide_tables(l1_df, "L1-fusion solver: atime (Legacy Full-Edge vs Operator vs Chain Approx.)")
 
 cat("\nSaved files:\n")
 cat(sprintf("- %s\n", l1_summary_file))

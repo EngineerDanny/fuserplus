@@ -3,24 +3,28 @@
 ## UCI Communities and Crime
 
 - Raw files:
-  - `data/raw/communities.data`
-  - `data/raw/communities.names`
+  - `data/raw/communities/communities.data`
+  - `data/raw/communities/communities.names`
 - Processed benchmark-ready file:
-  - `data/processed/communities_crime_l2.rds`
+  - `data/processed/communities_crime/grouped_regression.csv`
+  - `data/processed/communities_crime/grouped_regression_meta.json`
+  - `data/processed/communities_crime/grouped_regression_g_sparse_chain_edges.csv`
+  - `data/processed/communities_crime/grouped_regression_g_dense_edges.csv` (when available)
 
-### Processed object format (`communities_crime_l2.rds`)
+### Processed CSV format
 
-A named list with:
+Primary CSV (`grouped_regression.csv`) columns:
 
-- `X`: numeric matrix (`n x p`) predictors
-- `y`: numeric response vector (`ViolentCrimesPerPop`)
-- `groups`: integer group labels (derived from `state`)
-- `group_state_id`: mapping from internal group index to original state id
-- `feature_names`: predictor column names
-- `community_name`: original community name field
-- `G_dense`: dense all-pairs fusion matrix
-- `G_sparse_chain`: chain fusion matrix
-- `meta`: metadata
+- `y`: numeric response
+- `group_id`: integer group label
+- `group_label`: original group value
+- feature columns (`X`)
+
+Sidecar files:
+
+- `grouped_regression_meta.json`: dataset metadata (feature names, group levels, source, etc.)
+- `grouped_regression_g_sparse_chain_edges.csv`: chain graph edge list (`from,to,weight`)
+- `grouped_regression_g_dense_edges.csv`: dense graph edge list when `k` is below dense limit
 
 ### Preprocessing applied
 
@@ -40,3 +44,37 @@ Rscript scripts/prepare_communities_crime.R
 
 Optional 4th argument:
 - `min_group_size` (default `2`)
+
+## Multi-Dataset Grouped Regression Build
+
+To download and process the broader grouped-regression benchmark suite:
+
+```bash
+Rscript scripts/prepare_grouped_regression_datasets.R all
+```
+
+Default suite currently covers:
+
+- Communities and Crime
+- UCI Wine Quality
+- UCI Student Performance
+- UCI Beijing Multi-Site Air Quality
+- UCI ElectricityLoadDiagrams20112014
+- OWID CO2
+- World Bank WDI (API indicators)
+- NYC TLC trip sample (Open Data API)
+- NOAA GHCN daily sample (selected stations)
+- CountyPlus (release asset)
+- SARCOS (OpenML)
+- School grouped regression fallback from `nlme` (`MathAchieve` + `MathAchSchool`)
+
+This writes processed CSV-first outputs in per-dataset folders under `data/processed/`:
+
+- `data/processed/<dataset>/grouped_regression.csv` (main tabular data)
+- `data/processed/<dataset>/grouped_regression_meta.json` (metadata)
+- `data/processed/<dataset>/grouped_regression_g_sparse_chain_edges.csv` (chain graph edges)
+- `data/processed/<dataset>/grouped_regression_g_dense_edges.csv` (dense graph edges, when available)
+
+A run summary is saved to:
+
+- `data/processed/grouped_regression_datasets_summary.csv`
