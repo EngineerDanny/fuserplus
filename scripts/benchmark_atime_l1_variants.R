@@ -11,6 +11,9 @@ source("R/l1_fusion_dfs_chain.R")
 source("R/l1_fusion_chain_specialized.R")
 
 DEFAULTS <- list(
+  data_mode = "real",  # real | synthetic
+  data_rds = "data/processed/world_bank_wdi/grouped_regression.rds",
+  min_group_size = 2L,
   seed = 20260206L,
   k_values = "10,20,30,40,50,80,100",
   p = 120L,
@@ -55,6 +58,13 @@ as_bool <- function(x, default = FALSE) {
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
+as_choice <- function(x, choices, arg_name) {
+  if (!(x %in% choices)) {
+    stop(sprintf("%s must be one of: %s", arg_name, paste(choices, collapse = ", ")))
+  }
+  x
+}
+
 as_num_vec <- function(x) {
   parts <- trimws(strsplit(x, ",", fixed = TRUE)[[1L]])
   parts <- parts[nzchar(parts)]
@@ -63,10 +73,10 @@ as_num_vec <- function(x) {
   sort(unique(vals))
 }
 
-build_G <- function(k, structure) {
+build_G <- function(k, structure, dense_diag = 0) {
   if (structure == "dense") {
     G <- matrix(1, k, k)
-    diag(G) <- 0
+    diag(G) <- dense_diag
     return(G)
   }
   if (structure == "sparse_chain") {
@@ -80,6 +90,72 @@ build_G <- function(k, structure) {
     return(G)
   }
   stop("Unknown g_structure: ", structure)
+}
+
+prepare_real_pool <- function(data_rds, min_group_size = 2L) {
+  d0 <- readRDS(data_rds)
+  if (!all(c("X", "y", "groups") %in% names(d0))) {
+    stop("Real-data RDS must contain at least X, y, groups.")
+  }
+  X <- as.matrix(d0$X)
+  y <- as.numeric(d0$y)
+  groups <- as.integer(d0$groups)
+  if (length(groups) != nrow(X) || length(y) != nrow(X)) {
+    stop("RDS has inconsistent X/y/groups dimensions.")
+  }
+  if (stats::sd(y) <= 0) {
+    stop("Real-data RDS has constant y; choose a dataset with response variation.")
+  }
+  counts <- sort(table(groups), decreasing = TRUE)
+  counts <- counts[counts >= min_group_size]
+  if (!length(counts)) {
+    stop("No groups satisfy min_group_size in real dataset.")
+  }
+
+  list(
+    X = X,
+    y = y,
+    groups = groups,
+    group_order = as.integer(names(counts)),
+    G_dense = d0$G_dense %||% NULL,
+    G_sparse_chain = d0$G_sparse_chain %||% NULL
+  )
+}
+
+slice_real_data <- function(k, pool, g_structure) {
+  if (k > length(pool$group_order)) {
+    stop(sprintf("Requested k=%d but only %d groups available after filtering.", k, length(pool$group_order)))
+  }
+  keep_levels <- pool$group_order[seq_len(k)]
+  keep_rows <- pool$groups %in% keep_levels
+
+  X <- pool$X[keep_rows, , drop = FALSE]
+  y <- pool$y[keep_rows]
+  if (stats::sd(y) <= 0) {
+    stop(sprintf("Selected real-data slice for k=%d has constant y; use another dataset or k range.", k))
+  }
+  groups_orig <- pool$groups[keep_rows]
+  groups <- as.integer(factor(groups_orig, levels = keep_levels))
+
+  if (g_structure == "dense") {
+    if (!is.null(pool$G_dense)) {
+      G <- as.matrix(pool$G_dense[keep_levels, keep_levels, drop = FALSE])
+      diag(G) <- 0
+    } else {
+      G <- build_G(k, "dense", dense_diag = 0)
+    }
+  } else if (g_structure == "sparse_chain") {
+    if (!is.null(pool$G_sparse_chain)) {
+      G <- as.matrix(pool$G_sparse_chain[keep_levels, keep_levels, drop = FALSE])
+      diag(G) <- 0
+    } else {
+      G <- build_G(k, "sparse_chain", dense_diag = 0)
+    }
+  } else {
+    stop("Unknown g_structure: ", g_structure)
+  }
+
+  list(X = X, y = y, groups = groups, G = G)
 }
 
 summarize_atime <- function(obj) {
@@ -127,6 +203,11 @@ print_wide_tables <- function(df, header) {
 argv <- parse_args(commandArgs(trailingOnly = TRUE))
 get_opt <- function(key) if (key %in% names(argv)) argv[[key]] else DEFAULTS[[key]]
 
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+data_mode <- as_choice(as.character(get_opt("data_mode")), c("real", "synthetic"), "--data_mode")
+data_rds <- as.character(get_opt("data_rds"))
+min_group_size <- as.integer(get_opt("min_group_size"))
 seed <- as.integer(get_opt("seed"))
 k_values <- as_num_vec(get_opt("k_values"))
 p <- as.integer(get_opt("p"))
@@ -150,6 +231,19 @@ out_prefix <- as.character(get_opt("out_prefix"))
 if (!dir.exists("inst/figures")) dir.create("inst/figures", recursive = TRUE)
 if (!dir.exists("build")) dir.create("build", recursive = TRUE)
 
+real_pool <- NULL
+if (data_mode == "real") {
+  real_pool <- prepare_real_pool(data_rds = data_rds, min_group_size = min_group_size)
+  max_k <- length(real_pool$group_order)
+  if (max(k_values) > max_k) {
+    stop(sprintf("Requested max k=%d exceeds available k=%d from %s.", max(k_values), max_k, data_rds))
+  }
+  cat(sprintf("Using real data: %s\n", data_rds))
+  cat(sprintf("Available groups (>= %d rows): %d\n", min_group_size, max_k))
+} else {
+  cat("Using synthetic data mode.\n")
+}
+
 # -----------------------------
 # L1 atime benchmark (old_l1 vs operator vs chain_specialized)
 # -----------------------------
@@ -159,28 +253,36 @@ l1_obj <- atime::atime(
   seconds.limit = seconds_limit,
   N.env.parent = environment(),
   setup = {
-    set.seed(seed + 5000L + N)
     k <- N
-    groups <- rep(seq_len(k), each = n_group_train)
-    n <- length(groups)
-    X <- matrix(rnorm(n * p), nrow = n, ncol = p)
+    if (data_mode == "real") {
+      d <- slice_real_data(k = k, pool = real_pool, g_structure = g_structure)
+      X <- d$X
+      y <- d$y
+      groups <- d$groups
+      G <- d$G
+    } else {
+      set.seed(seed + 5000L + N)
+      groups <- rep(seq_len(k), each = n_group_train)
+      n <- length(groups)
+      X <- matrix(rnorm(n * p), nrow = n, ncol = p)
 
-    beta <- matrix(0, nrow = p, ncol = k)
-    nonzero <- rbinom(p * k, 1, 0.02 / max(1L, k))
-    if (sum(nonzero) > 0L) {
-      beta[which(nonzero == 1L)] <- rnorm(sum(nonzero), 0.8, 0.25)
-    }
-    shared <- rbinom(p, 1, 0.02)
-    if (sum(shared) > 0L) {
-      beta[which(shared == 1L), ] <- rnorm(sum(shared), -0.8, 0.25)
-    }
+      beta <- matrix(0, nrow = p, ncol = k)
+      nonzero <- rbinom(p * k, 1, 0.02 / max(1L, k))
+      if (sum(nonzero) > 0L) {
+        beta[which(nonzero == 1L)] <- rnorm(sum(nonzero), 0.8, 0.25)
+      }
+      shared <- rbinom(p, 1, 0.02)
+      if (sum(shared) > 0L) {
+        beta[which(shared == 1L), ] <- rnorm(sum(shared), -0.8, 0.25)
+      }
 
-    y <- numeric(n)
-    for (g in seq_len(k)) {
-      idx <- which(groups == g)
-      y[idx] <- X[idx, , drop = FALSE] %*% beta[, g] + rnorm(length(idx), sd = sigma)
+      y <- numeric(n)
+      for (g in seq_len(k)) {
+        idx <- which(groups == g)
+        y[idx] <- X[idx, , drop = FALSE] %*% beta[, g] + rnorm(length(idx), sd = sigma)
+      }
+      G <- build_G(k, g_structure, dense_diag = 0)
     }
-    G <- build_G(k, g_structure)
   },
   expr.list = setNames(
     list(
