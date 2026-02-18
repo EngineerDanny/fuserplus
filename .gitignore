@@ -46,3 +46,8 @@ data/processed/grouped_regression_datasets_summary.csv
 
 # generated benchmark summaries
 scripts/atime_*_summary.csv
+
+# local tuning experiments (not part of package code)
+scripts/local_tune_lambda_gamma_experiment.R
+scripts/local_tune_lambda_gamma_results.csv
+scripts/local_tune_lambda_gamma_results*.csv
