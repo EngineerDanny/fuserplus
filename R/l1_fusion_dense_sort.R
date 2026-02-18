@@ -62,10 +62,46 @@
   as.numeric(sum((2 * idx - k - 1) * xs))
 }
 
-.dense_sort_fusion_operator_term <- function(B.fusion, gamma.eff, mu, return_stats = FALSE) {
+.dense_sort_fusion_operator_term <- function(
+  B.fusion,
+  gamma.eff,
+  mu,
+  return_stats = FALSE,
+  workspace = NULL
+) {
   p.use <- nrow(B.fusion)
   k <- ncol(B.fusion)
-  delta <- matrix(0, nrow = p.use, ncol = k)
+  use_ws <- !is.null(workspace) &&
+    is.environment(workspace) &&
+    !is.null(workspace$delta) &&
+    is.matrix(workspace$delta) &&
+    identical(dim(workspace$delta), c(p.use, k))
+
+  if (use_ws) {
+    delta <- workspace$delta
+    delta[] <- 0
+    if (is.null(workspace$xs) || length(workspace$xs) != k) {
+      workspace$xs <- numeric(k)
+    }
+    if (is.null(workspace$pref) || length(workspace$pref) != (k + 1L)) {
+      workspace$pref <- numeric(k + 1L)
+    }
+    if (is.null(workspace$l.sat) || length(workspace$l.sat) != k) {
+      workspace$l.sat <- integer(k)
+    }
+    if (is.null(workspace$u.uns) || length(workspace$u.uns) != k) {
+      workspace$u.uns <- integer(k)
+    }
+    if (is.null(workspace$tmp.num) || length(workspace$tmp.num) != k) {
+      workspace$tmp.num <- numeric(k)
+    }
+    if (is.null(workspace$s.sorted) || length(workspace$s.sorted) != k) {
+      workspace$s.sorted <- numeric(k)
+    }
+  } else {
+    delta <- matrix(0, nrow = p.use, ncol = k)
+  }
+
   if (gamma.eff <= 0 || k <= 1L) {
     if (!return_stats) {
       return(delta)
@@ -75,68 +111,57 @@
 
   cval <- gamma.eff / mu
   tau <- mu / gamma.eff
+  i.seq <- seq_len(k)
+  k.vec <- rep.int(k, k)
+
+  if (use_ws) {
+    xs <- workspace$xs
+    pref <- workspace$pref
+    l.sat <- workspace$l.sat
+    u.uns <- workspace$u.uns
+    tmp.num <- workspace$tmp.num
+    s.sorted <- workspace$s.sorted
+  } else {
+    xs <- numeric(k)
+    pref <- numeric(k + 1L)
+    l.sat <- integer(k)
+    u.uns <- integer(k)
+    tmp.num <- numeric(k)
+    s.sorted <- numeric(k)
+  }
 
   for (j in seq_len(p.use)) {
     x <- B.fusion[j, ]
     ord <- order(x, method = "radix")
-    xs <- x[ord]
-    pref <- c(0, cumsum(xs))
-    s.sorted <- numeric(k)
+    xs[] <- x[ord]
+    pref[1L] <- 0
+    pref[2:(k + 1L)] <- cumsum(xs)
 
-    for (i in seq_len(k)) {
-      xi <- xs[i]
+    # left saturated count: # {j < i : xs[j] <= xs[i] - tau}
+    l.sat[] <- pmin(
+      findInterval(xs - tau, xs, rightmost.closed = TRUE),
+      i.seq - 1L
+    )
 
-      # Number of left values with xi - xj >= tau.
-      l.sat <- 0L
-      if (i > 1L) {
-        lo <- 1L
-        hi <- i - 1L
-        target <- xi - tau
-        while (lo <= hi) {
-          mid <- (lo + hi) %/% 2L
-          if (xs[mid] <= target) {
-            l.sat <- mid
-            lo <- mid + 1L
-          } else {
-            hi <- mid - 1L
-          }
-        }
-      }
+    # right unsaturated upper index: max j with xs[j] < xs[i] + tau
+    u.uns[] <- pmax(
+      i.seq,
+      findInterval(xs + tau, xs, left.open = TRUE)
+    )
 
-      # Largest right index with xj - xi < tau.
-      u.uns <- i
-      if (i < k) {
-        lo <- i + 1L
-        hi <- k
-        target <- xi + tau
-        while (lo <= hi) {
-          mid <- (lo + hi) %/% 2L
-          if (xs[mid] < target) {
-            u.uns <- mid
-            lo <- mid + 1L
-          } else {
-            hi <- mid - 1L
-          }
-        }
-      }
+    n.left.uns <- (i.seq - 1L) - l.sat
+    sum.left.uns <- pref[i.seq] - pref[l.sat + 1L]
+    left.uns <- cval * (n.left.uns * xs - sum.left.uns)
+    left.uns[n.left.uns <= 0L] <- 0
 
-      n.left.uns <- (i - 1L) - l.sat
-      left.uns <- 0
-      if (n.left.uns > 0L) {
-        sum.left.uns <- pref[i] - pref[l.sat + 1L]
-        left.uns <- cval * (n.left.uns * xi - sum.left.uns)
-      }
+    n.right.uns <- u.uns - i.seq
+    sum.right.uns <- pref[u.uns + 1L] - pref[i.seq + 1L]
+    right.uns <- cval * (sum.right.uns - n.right.uns * xs)
+    right.uns[n.right.uns <= 0L] <- 0
 
-      n.right.uns <- u.uns - i
-      right.uns <- 0
-      if (n.right.uns > 0L) {
-        sum.right.uns <- pref[u.uns + 1L] - pref[i + 1L]
-        right.uns <- cval * (sum.right.uns - n.right.uns * xi)
-      }
-
-      right.sat <- k - u.uns
-      s.sorted[i] <- l.sat + left.uns - right.uns - right.sat
-    }
+    right.sat <- k.vec - u.uns
+    tmp.num[] <- l.sat + left.uns - right.uns - right.sat
+    s.sorted[] <- tmp.num
 
     row.delta <- gamma.eff * s.sorted
     delta[j, ord] <- row.delta
@@ -210,6 +235,18 @@
   B.old <- state$B.old
   W <- state$W
   weighted.delta.f <- state$weighted.delta.f
+  penalty.mat <- NULL
+  if (!is.null(prep$penalty.factors)) {
+    penalty.mat <- matrix(prep$penalty.factors, nrow = prep$p, ncol = prep$k)
+  }
+  fusion.workspace <- new.env(parent = emptyenv())
+  fusion.workspace$delta <- matrix(0, nrow(B.old), ncol(B.old))
+  fusion.workspace$xs <- numeric(prep$k)
+  fusion.workspace$pref <- numeric(prep$k + 1L)
+  fusion.workspace$l.sat <- integer(prep$k)
+  fusion.workspace$u.uns <- integer(prep$k)
+  fusion.workspace$tmp.num <- numeric(prep$k)
+  fusion.workspace$s.sorted <- numeric(prep$k)
 
   iter <- 0L
   converged <- FALSE
@@ -220,9 +257,8 @@
       trace_state$iter_global <- trace_state$iter_global + 1L
     }
 
-    if (!is.null(prep$penalty.factors)) {
-      B.sparsity <- B.old[seq_len(prep$p), , drop = FALSE] *
-        matrix(prep$penalty.factors, nrow = prep$p, ncol = prep$k)
+    if (!is.null(penalty.mat)) {
+      B.sparsity <- B.old[seq_len(prep$p), , drop = FALSE] * penalty.mat
     } else {
       B.sparsity <- B.old[seq_len(prep$p), , drop = FALSE]
     }
@@ -251,14 +287,21 @@
     sparsity.sq <- sum(A.sparsity^2)
     sparsity.inf <- max(abs(A.sparsity))
 
-    fusion.stats <- .dense_sort_fusion_operator_term(
+    need.fusion.stats <- !is.null(trace_state) && isTRUE(trace_state$enabled)
+    fusion.out <- .dense_sort_fusion_operator_term(
       B.fusion = B.fusion,
       gamma.eff = gamma.eff,
       mu = mu,
-      return_stats = TRUE
+      return_stats = need.fusion.stats,
+      workspace = fusion.workspace
     )
+    if (need.fusion.stats) {
+      fusion.delta <- fusion.out$delta
+    } else {
+      fusion.delta <- fusion.out
+    }
 
-    delta.reg <- lambda * A.sparsity + fusion.stats$delta
+    delta.reg <- lambda * A.sparsity + fusion.delta
     delta.f <- delta.lik + delta.reg
     B.new <- W - L.U.inv * delta.f
 
@@ -277,9 +320,9 @@
           gamma.eff = gamma.eff,
           intercept = intercept
         )
-        dual.linear <- sparsity.linear + fusion.stats$linear
-        dual.quad <- 0.5 * mu * (sparsity.sq + fusion.stats$prox_sq)
-        .append_trace_row(trace_state, list(
+          dual.linear <- sparsity.linear + fusion.out$linear
+          dual.quad <- 0.5 * mu * (sparsity.sq + fusion.out$prox_sq)
+          .append_trace_row(trace_state, list(
           stage = "dense_sort",
           iter_local = i,
           iter_global = trace_state$iter_global,
@@ -287,7 +330,7 @@
           dual_linear = dual.linear,
           dual_quadratic = dual.quad,
           dual_surrogate_reg = dual.linear - dual.quad,
-          dual_feas_inf = max(sparsity.inf, fusion.stats$prox_inf, na.rm = TRUE),
+            dual_feas_inf = max(sparsity.inf, fusion.out$prox_inf, na.rm = TRUE),
           update_l1 = improvement,
           kkt_inf = max(abs(delta.f)),
           kkt_fro = sqrt(mean(delta.f^2))
