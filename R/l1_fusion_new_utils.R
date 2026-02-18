@@ -211,7 +211,8 @@ fusedLassoProximalNewLastScreening <- function() {
   gamma,
   mu,
   edge.block,
-  return_stats = FALSE
+  return_stats = FALSE,
+  workspace = NULL
 ) {
   if (gamma <= 0 || length(edge.u) == 0) {
     zero <- matrix(0, nrow(B.fusion), k)
@@ -226,7 +227,39 @@ fusedLassoProximalNewLastScreening <- function() {
     ))
   }
 
-  out <- matrix(0, nrow(B.fusion), k)
+  use_ws <- !is.null(workspace) &&
+    is.environment(workspace) &&
+    !is.null(workspace$delta) &&
+    is.matrix(workspace$delta) &&
+    identical(dim(workspace$delta), c(nrow(B.fusion), k))
+
+  if (use_ws) {
+    out <- workspace$delta
+    out[] <- 0
+    if (is.null(workspace$diff) || length(workspace$diff) != nrow(B.fusion)) {
+      workspace$diff <- numeric(nrow(B.fusion))
+    }
+    if (is.null(workspace$prox) || length(workspace$prox) != nrow(B.fusion)) {
+      workspace$prox <- numeric(nrow(B.fusion))
+    }
+    if (is.null(workspace$gamma_w) || length(workspace$gamma_w) != length(edge.w)) {
+      workspace$gamma_w <- gamma * edge.w
+    }
+    if (is.null(workspace$gamma_w_over_mu) || length(workspace$gamma_w_over_mu) != length(edge.w)) {
+      workspace$gamma_w_over_mu <- workspace$gamma_w / mu
+    }
+    diff <- workspace$diff
+    prox <- workspace$prox
+    gamma_w <- workspace$gamma_w
+    gamma_w_over_mu <- workspace$gamma_w_over_mu
+  } else {
+    out <- matrix(0, nrow(B.fusion), k)
+    diff <- numeric(nrow(B.fusion))
+    prox <- numeric(nrow(B.fusion))
+    gamma_w <- gamma * edge.w
+    gamma_w_over_mu <- gamma_w / mu
+  }
+
   num.edges <- length(edge.u)
   edge.block <- max(1L, as.integer(edge.block))
   block.starts <- seq.int(1L, num.edges, by = edge.block)
@@ -239,16 +272,19 @@ fusedLassoProximalNewLastScreening <- function() {
     for (e in start:end) {
       u <- edge.u[e]
       v <- edge.v[e]
-      w <- edge.w[e]
-      diff <- B.fusion[, u] - B.fusion[, v]
-      z <- (gamma * w) * diff
-      prox <- pmax(pmin(z / mu, 1), -1)
-      contrib <- gamma * w * prox
-      out[, u] <- out[, u] + contrib
-      out[, v] <- out[, v] - contrib
+      g_w <- gamma_w[e]
+      g_w_over_mu <- gamma_w_over_mu[e]
+
+      diff[] <- B.fusion[, u] - B.fusion[, v]
+      prox[] <- diff * g_w_over_mu
+      prox[prox > 1] <- 1
+      prox[prox < -1] <- -1
+
+      out[, u] <- out[, u] + g_w * prox
+      out[, v] <- out[, v] - g_w * prox
 
       if (return_stats) {
-        linear_sum <- linear_sum + sum(z * prox)
+        linear_sum <- linear_sum + g_w * sum(diff * prox)
         prox_sq_sum <- prox_sq_sum + sum(prox^2)
         prox_inf <- max(prox_inf, max(abs(prox)))
       }
@@ -302,6 +338,16 @@ fusedLassoProximalNewLastScreening <- function() {
   W <- state$W
   weighted.delta.f <- state$weighted.delta.f
 
+  fusion_workspace <- NULL
+  if (length(edge.u) > 0L && gamma > 0) {
+    fusion_workspace <- new.env(parent = emptyenv())
+    fusion_workspace$delta <- matrix(0, nrow(B.old), ncol(B.old))
+    fusion_workspace$diff <- numeric(nrow(B.old))
+    fusion_workspace$prox <- numeric(nrow(B.old))
+    fusion_workspace$gamma_w <- gamma * edge.w
+    fusion_workspace$gamma_w_over_mu <- fusion_workspace$gamma_w / mu
+  }
+
   iter <- 0L
   converged <- FALSE
   for (i in seq_len(num.it)) {
@@ -339,7 +385,8 @@ fusedLassoProximalNewLastScreening <- function() {
       B.fusion = B.fusion, k = k,
       edge.u = edge.u, edge.v = edge.v, edge.w = edge.w,
       gamma = gamma, mu = mu, edge.block = edge.block,
-      return_stats = TRUE
+      return_stats = TRUE,
+      workspace = fusion_workspace
     )
     delta.reg <- lambda * A.sparsity + fusion_stats$delta
 
