@@ -1,9 +1,9 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(ggplot2)
   library(Matrix)
   library(glmnet)
+  library(bench)
 })
 
 # Load local L1 solver implementations.
@@ -30,10 +30,11 @@ DEFAULTS <- list(
   gamma = 1e-3,
   mu = 1e-4,
   tol = 1e-5,
-  intercept = FALSE,
+  intercept = TRUE,
   scaling = FALSE,
-  standardize = FALSE,
+  standardize = TRUE,
   conserve_memory = FALSE,
+  measure_memory = TRUE,
   edge_block = 256L,
   c_flag_old = FALSE,
   time_log_scale = FALSE,
@@ -253,23 +254,42 @@ fit_l1 <- function(method, d, cfg) {
 }
 
 fit_one <- function(method, d, cfg) {
+  warning_msg <- "none"
+
   if (method == "featureless") {
-    ybar <- 0
-    tm <- system.time({
+    ybar <- mean(d$y_train)
+    tm <- bench::system_time({
       ybar <- mean(d$y_train)
     })
+    elapsed_sec <- as.numeric(tm[["real"]])
+    elapsed_ms <- elapsed_sec * 1000
+
+    memory_mb <- 0
+    if (isTRUE(cfg$measure_memory)) {
+      mem_res <- suppressWarnings(bench::mark(
+        mean(d$y_train),
+        iterations = 1,
+        check = FALSE,
+        memory = TRUE
+      ))
+      memory_mb <- as.numeric(mem_res$mem_alloc) / (1024^2)
+      if (!is.finite(memory_mb)) memory_mb <- 0
+    }
+
     return(list(
-      elapsed_sec = unname(tm[["elapsed"]]),
+      elapsed_sec = elapsed_sec,
+      elapsed_ms = elapsed_ms,
+      memory_mb = memory_mb,
       test_rmse = rmse(d$y_test, rep(ybar, length(d$y_test))),
       warning = "none"
     ))
   }
 
-  fit <- NULL
-  warning_msg <- "none"
-  gc(reset = TRUE)
-  tm <- system.time({
-    fit <- withCallingHandlers(
+  holder <- new.env(parent = emptyenv())
+  holder$fit <- NULL
+
+  tm <- bench::system_time({
+    holder$fit <- withCallingHandlers(
       {
         fit_l1(method, d, cfg)
       },
@@ -280,14 +300,42 @@ fit_one <- function(method, d, cfg) {
     )
   })
 
+  fit <- holder$fit
+  if (is.null(fit)) {
+    stop("Fit failed to return coefficients for method: ", method)
+  }
+
+  elapsed_sec <- as.numeric(tm[["real"]])
+  elapsed_ms <- elapsed_sec * 1000
+
+  memory_mb <- 0
+  if (isTRUE(cfg$measure_memory)) {
+    mem_res <- suppressWarnings(bench::mark(
+      withCallingHandlers(
+        {
+          fit_l1(method, d, cfg)
+        },
+        warning = function(w) {
+          invokeRestart("muffleWarning")
+        }
+      ),
+      iterations = 1,
+      check = FALSE,
+      memory = TRUE
+    ))
+    memory_mb <- as.numeric(mem_res$mem_alloc) / (1024^2)
+    if (!is.finite(memory_mb)) memory_mb <- 0
+  }
+
   yhat <- predict_from_beta(fit, d$X_test, d$groups_test)
   list(
-    elapsed_sec = unname(tm[["elapsed"]]),
+    elapsed_sec = elapsed_sec,
+    elapsed_ms = elapsed_ms,
+    memory_mb = memory_mb,
     test_rmse = rmse(d$y_test, yhat),
     warning = warning_msg
   )
 }
-
 method_label <- function(method) {
   switch(
     method,
@@ -316,10 +364,11 @@ cfg <- list(
   gamma = as.numeric(get_opt("gamma")),
   mu = as.numeric(get_opt("mu")),
   tol = as.numeric(get_opt("tol")),
-  intercept = as_bool(get_opt("intercept"), FALSE),
+  intercept = as_bool(get_opt("intercept"), TRUE),
   scaling = as_bool(get_opt("scaling"), FALSE),
-  standardize = as_bool(get_opt("standardize"), FALSE),
+  standardize = as_bool(get_opt("standardize"), TRUE),
   conserve_memory = as_bool(get_opt("conserve_memory"), FALSE),
+  measure_memory = as_bool(get_opt("measure_memory"), TRUE),
   edge_block = as_int(get_opt("edge_block")),
   c_flag_old = as_bool(get_opt("c_flag_old"), FALSE),
   time_log_scale = as_bool(get_opt("time_log_scale"), FALSE),
@@ -339,7 +388,6 @@ if (cfg$min_group_size < cfg$folds) {
 }
 
 if (!dir.exists("build")) dir.create("build", recursive = TRUE)
-if (!dir.exists("inst/figures")) dir.create("inst/figures", recursive = TRUE)
 
 d0 <- prepare_real_data(
   data_rds = cfg$data_rds,
@@ -355,6 +403,7 @@ cat(sprintf("Graph structure: %s\n", cfg$g_structure))
 cat(sprintf("CV folds: %d (stratified by group)\n", cfg$folds))
 cat(sprintf("Fixed L1 budget: %d\n", cfg$l1_budget))
 cat(sprintf("Feature standardization: %s\n", ifelse(cfg$standardize, "TRUE (train-fold stats)", "FALSE")))
+cat(sprintf("Memory measurement pass: %s\n", ifelse(cfg$measure_memory, "TRUE (bench::mark mem_alloc)", "FALSE")))
 
 rows <- list()
 row_id <- 0L
@@ -392,7 +441,10 @@ for (fold_id in seq_len(cfg$folds)) {
   for (method in cfg$l1_methods) {
     cat(sprintf("fold=%d method=%s budget=%d ... ", fold_id, method, cfg$l1_budget))
     res <- fit_one(method = method, d = d, cfg = cfg)
-    cat(sprintf("time=%.3fs test_rmse=%.6f\n", res$elapsed_sec, res$test_rmse))
+    cat(sprintf(
+      "time=%.3fms memory=%.3fMB test_rmse=%.6f\n",
+      res$elapsed_ms, res$memory_mb, res$test_rmse
+    ))
 
     row_id <- row_id + 1L
     rows[[row_id]] <- data.frame(
@@ -400,6 +452,8 @@ for (fold_id in seq_len(cfg$folds)) {
       method = method,
       budget = cfg$l1_budget,
       elapsed_sec = res$elapsed_sec,
+      elapsed_ms = res$elapsed_ms,
+      memory_mb = res$memory_mb,
       test_rmse = res$test_rmse,
       warning = res$warning,
       stringsAsFactors = FALSE
@@ -415,20 +469,33 @@ method_labels <- vapply(method_levels, method_label, character(1))
 raw_df$method <- factor(raw_df$method, levels = method_levels)
 raw_df$method_label <- factor(raw_df$method_label, levels = method_labels)
 
-mean_df <- aggregate(cbind(test_rmse, elapsed_sec) ~ method + method_label, data = raw_df, FUN = mean)
+mean_df <- aggregate(
+  cbind(test_rmse, elapsed_sec, elapsed_ms, memory_mb) ~ method + method_label,
+  data = raw_df,
+  FUN = mean
+)
 names(mean_df)[names(mean_df) == "test_rmse"] <- "mean_test_rmse"
 names(mean_df)[names(mean_df) == "elapsed_sec"] <- "mean_elapsed_sec"
+names(mean_df)[names(mean_df) == "elapsed_ms"] <- "mean_elapsed_ms"
+names(mean_df)[names(mean_df) == "memory_mb"] <- "mean_memory_mb"
 
 sd_test <- aggregate(test_rmse ~ method + method_label, data = raw_df, FUN = sd)
 sd_time <- aggregate(elapsed_sec ~ method + method_label, data = raw_df, FUN = sd)
+sd_time_ms <- aggregate(elapsed_ms ~ method + method_label, data = raw_df, FUN = sd)
+sd_mem <- aggregate(memory_mb ~ method + method_label, data = raw_df, FUN = sd)
 names(sd_test)[names(sd_test) == "test_rmse"] <- "sd_test_rmse"
 names(sd_time)[names(sd_time) == "elapsed_sec"] <- "sd_elapsed_sec"
+names(sd_time_ms)[names(sd_time_ms) == "elapsed_ms"] <- "sd_elapsed_ms"
+names(sd_mem)[names(sd_mem) == "memory_mb"] <- "sd_memory_mb"
 
 summary_df <- merge(mean_df, sd_test, by = c("method", "method_label"), all.x = TRUE)
 summary_df <- merge(summary_df, sd_time, by = c("method", "method_label"), all.x = TRUE)
+summary_df <- merge(summary_df, sd_time_ms, by = c("method", "method_label"), all.x = TRUE)
+summary_df <- merge(summary_df, sd_mem, by = c("method", "method_label"), all.x = TRUE)
 summary_df$sd_test_rmse[is.na(summary_df$sd_test_rmse)] <- 0
 summary_df$sd_elapsed_sec[is.na(summary_df$sd_elapsed_sec)] <- 0
-
+summary_df$sd_elapsed_ms[is.na(summary_df$sd_elapsed_ms)] <- 0
+summary_df$sd_memory_mb[is.na(summary_df$sd_memory_mb)] <- 0
 raw_df$warning_flag <- raw_df$warning != "none"
 warn_counts <- aggregate(warning_flag ~ method + method_label, data = raw_df, FUN = sum)
 names(warn_counts)[names(warn_counts) == "warning_flag"] <- "n_warnings"
@@ -455,61 +522,6 @@ summary_csv <- sprintf("build/%s_summary.csv", cfg$out_prefix)
 write.csv(raw_df, raw_csv, row.names = FALSE)
 write.csv(summary_df, summary_csv, row.names = FALSE)
 
-p_rmse <- ggplot(summary_df, aes(x = method_label, y = mean_test_rmse, color = method_label)) +
-  geom_point(size = 2.8) +
-  geom_errorbar(
-    aes(
-      ymin = pmax(mean_test_rmse - sd_test_rmse, 0),
-      ymax = mean_test_rmse + sd_test_rmse
-    ),
-    width = 0.12,
-    linewidth = 0.6
-  ) +
-  labs(
-    x = "Method",
-    y = "CV Test RMSE (mean +/- SD)"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(
-    legend.position = "none",
-    axis.text.x = element_text(angle = 12, hjust = 1),
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background = element_rect(fill = "white", color = NA)
-  )
-
-p_time <- ggplot(summary_df, aes(x = method_label, y = mean_elapsed_sec, color = method_label)) +
-  geom_point(size = 2.8) +
-  geom_errorbar(
-    aes(
-      ymin = pmax(mean_elapsed_sec - sd_elapsed_sec, 0),
-      ymax = mean_elapsed_sec + sd_elapsed_sec
-    ),
-    width = 0.12,
-    linewidth = 0.6
-  ) +
-  labs(
-    x = "Method",
-    y = "Train Time (seconds, mean +/- SD)"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(
-    legend.position = "none",
-    axis.text.x = element_text(angle = 12, hjust = 1),
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background = element_rect(fill = "white", color = NA)
-  )
-
-if (cfg$time_log_scale) {
-  p_time <- p_time + scale_y_log10()
-}
-
-rmse_png <- sprintf("inst/figures/%s_l1_cv_rmse.png", cfg$out_prefix)
-time_png <- sprintf("inst/figures/%s_l1_cv_time.png", cfg$out_prefix)
-ggsave(rmse_png, p_rmse, width = 6.4, height = 3.8, dpi = 300, bg = "white")
-ggsave(time_png, p_time, width = 6.4, height = 3.8, dpi = 300, bg = "white")
-
 cat("\nSaved files:\n")
 cat(sprintf("- %s\n", raw_csv))
 cat(sprintf("- %s\n", summary_csv))
-cat(sprintf("- %s\n", rmse_png))
-cat(sprintf("- %s\n", time_png))
