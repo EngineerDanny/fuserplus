@@ -38,7 +38,7 @@ DEFAULTS <- list(
   intercept = TRUE,
   scaling = FALSE,
   standardize = TRUE,
-  conserve_memory = FALSE,
+  conserve_memory = TRUE,
   measure_memory = TRUE,
   edge_block = 256L,
   c_flag_old = FALSE,
