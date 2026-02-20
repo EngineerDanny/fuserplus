@@ -403,25 +403,59 @@ prepare_electricity <- function() {
   d <- utils::read.csv(txt_path, sep = ";", dec = ",", check.names = FALSE, stringsAsFactors = FALSE)
   if (ncol(d) < 3L) stop("Unexpected ElectricityLoadDiagrams format.")
 
-  n_timestamps <- min(2500L, nrow(d))
-  n_clients <- min(120L, ncol(d) - 1L)
-  col_idx <- c(1L, seq.int(2L, n_clients + 1L))
-  d <- d[seq_len(n_timestamps), col_idx, drop = FALSE]
+  n_timestamps_target <- 2500L
+  n_clients_target <- 120L
+  times_all <- as.POSIXct(d[[1]], format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  if (all(is.na(times_all))) stop("Could not parse timestamp in ElectricityLoadDiagrams.")
+  client_cols_all <- names(d)[-1L]
 
-  times <- as.POSIXct(d[[1]], format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
-  if (all(is.na(times))) stop("Could not parse timestamp in ElectricityLoadDiagrams.")
-  client_cols <- names(d)[-1L]
+  # Pick active clients by nonzero usage and variability to avoid all-zero slices.
+  client_nonzero <- vapply(client_cols_all, function(cl) {
+    z <- suppressWarnings(as.numeric(d[[cl]]))
+    sum(is.finite(z) & z != 0)
+  }, numeric(1))
+  client_sd <- vapply(client_cols_all, function(cl) {
+    z <- suppressWarnings(as.numeric(d[[cl]]))
+    stats::sd(z[is.finite(z)])
+  }, numeric(1))
+  active_clients <- client_cols_all[client_nonzero > 0 & is.finite(client_sd) & client_sd > 0]
+  if (length(active_clients) == 0L) stop("No active electricity clients with nonzero and varying load found.")
+  active_clients <- active_clients[order(client_nonzero[active_clients], decreasing = TRUE)]
+  client_cols <- head(active_clients, min(n_clients_target, length(active_clients)))
+
+  client_mat <- do.call(cbind, lapply(client_cols, function(cl) suppressWarnings(as.numeric(d[[cl]]))))
+  if (!is.matrix(client_mat) || nrow(client_mat) == 0L) stop("Failed to build electricity client matrix.")
+
+  # Pick a contiguous time window with the most active client measurements.
+  row_activity <- rowSums(is.finite(client_mat) & client_mat != 0)
+  n_timestamps <- min(n_timestamps_target, nrow(client_mat))
+  if (n_timestamps < nrow(client_mat)) {
+    csum <- c(0, cumsum(row_activity))
+    window_sums <- csum[(n_timestamps + 1L):(nrow(client_mat) + 1L)] - csum[1L:(nrow(client_mat) - n_timestamps + 1L)]
+    start_idx <- which.max(window_sums)
+    row_idx <- seq.int(start_idx, start_idx + n_timestamps - 1L)
+  } else {
+    row_idx <- seq_len(n_timestamps)
+  }
+  d <- d[row_idx, c(1L, match(client_cols, names(d))), drop = FALSE]
+  times <- times_all[row_idx]
 
   long <- do.call(rbind, lapply(client_cols, function(cl) {
     data.frame(group_raw = cl, time = times, load = as.numeric(d[[cl]]), stringsAsFactors = FALSE)
   }))
   long <- long[is.finite(long$load) & !is.na(long$time), , drop = FALSE]
+  if (nrow(long) == 0L || !is.finite(stats::sd(long$load)) || stats::sd(long$load) <= 0) {
+    stop("Electricity load is constant after active client/window selection; cannot build regression dataset.")
+  }
   long <- long[order(long$group_raw, long$time), , drop = FALSE]
   long$lag1 <- ave(long$load, long$group_raw, FUN = function(z) c(NA_real_, head(z, -1L)))
   long$hour <- as.integer(format(long$time, "%H"))
   long$wday <- as.integer(format(long$time, "%u"))
   long$month <- as.integer(format(long$time, "%m"))
   long <- long[!is.na(long$lag1), , drop = FALSE]
+  if (nrow(long) == 0L || !is.finite(stats::sd(long$load)) || stats::sd(long$load) <= 0) {
+    stop("Electricity load became constant after lag feature construction; cannot build regression dataset.")
+  }
 
   obj <- finalize_grouped(
     long, y_col = "load", group_col = "group_raw",
