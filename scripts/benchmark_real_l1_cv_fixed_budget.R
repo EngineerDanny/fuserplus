@@ -3,7 +3,12 @@
 suppressPackageStartupMessages({
   library(Matrix)
   library(glmnet)
-  library(bench)
+  if (requireNamespace("RSpectra", quietly = TRUE)) {
+    library(RSpectra)
+  }
+  if (requireNamespace("irlba", quietly = TRUE)) {
+    library(irlba)
+  }
 })
 
 # Load local L1 solver implementations.
@@ -254,87 +259,7 @@ fit_l1 <- function(method, d, cfg) {
 }
 
 fit_one <- function(method, d, cfg) {
-  warning_msg <- "none"
-
-  if (method == "featureless") {
-    ybar <- mean(d$y_train)
-    tm <- bench::system_time({
-      ybar <- mean(d$y_train)
-    })
-    elapsed_sec <- as.numeric(tm[["real"]])
-    elapsed_ms <- elapsed_sec * 1000
-
-    memory_mb <- 0
-    if (isTRUE(cfg$measure_memory)) {
-      mem_res <- suppressWarnings(bench::mark(
-        mean(d$y_train),
-        iterations = 1,
-        check = FALSE,
-        memory = TRUE
-      ))
-      memory_mb <- as.numeric(mem_res$mem_alloc) / (1024^2)
-      if (!is.finite(memory_mb)) memory_mb <- 0
-    }
-
-    return(list(
-      elapsed_sec = elapsed_sec,
-      elapsed_ms = elapsed_ms,
-      memory_mb = memory_mb,
-      test_rmse = rmse(d$y_test, rep(ybar, length(d$y_test))),
-      warning = "none"
-    ))
-  }
-
-  holder <- new.env(parent = emptyenv())
-  holder$fit <- NULL
-
-  tm <- bench::system_time({
-    holder$fit <- withCallingHandlers(
-      {
-        fit_l1(method, d, cfg)
-      },
-      warning = function(w) {
-        warning_msg <<- conditionMessage(w)
-        invokeRestart("muffleWarning")
-      }
-    )
-  })
-
-  fit <- holder$fit
-  if (is.null(fit)) {
-    stop("Fit failed to return coefficients for method: ", method)
-  }
-
-  elapsed_sec <- as.numeric(tm[["real"]])
-  elapsed_ms <- elapsed_sec * 1000
-
-  memory_mb <- 0
-  if (isTRUE(cfg$measure_memory)) {
-    mem_res <- suppressWarnings(bench::mark(
-      withCallingHandlers(
-        {
-          fit_l1(method, d, cfg)
-        },
-        warning = function(w) {
-          invokeRestart("muffleWarning")
-        }
-      ),
-      iterations = 1,
-      check = FALSE,
-      memory = TRUE
-    ))
-    memory_mb <- as.numeric(mem_res$mem_alloc) / (1024^2)
-    if (!is.finite(memory_mb)) memory_mb <- 0
-  }
-
-  yhat <- predict_from_beta(fit, d$X_test, d$groups_test)
-  list(
-    elapsed_sec = elapsed_sec,
-    elapsed_ms = elapsed_ms,
-    memory_mb = memory_mb,
-    test_rmse = rmse(d$y_test, yhat),
-    warning = warning_msg
-  )
+  run_method_timed_worker(method = method, d = d, cfg = cfg)
 }
 method_label <- function(method) {
   switch(
@@ -348,8 +273,177 @@ method_label <- function(method) {
   )
 }
 
+worker_cfg_from_parent <- function(cfg) {
+  list(
+    lambda = cfg$lambda,
+    gamma = cfg$gamma,
+    mu = cfg$mu,
+    tol = cfg$tol,
+    l1_budget = cfg$l1_budget,
+    c_flag_old = cfg$c_flag_old,
+    intercept = cfg$intercept,
+    scaling = cfg$scaling,
+    conserve_memory = cfg$conserve_memory,
+    edge_block = cfg$edge_block
+  )
+}
+
+parse_time_l_elapsed_sec <- function(lines) {
+  if (!length(lines)) return(NA_real_)
+  cand <- grep("\\breal\\b", lines, value = TRUE)
+  if (!length(cand)) return(NA_real_)
+  for (ln in cand) {
+    val <- suppressWarnings(as.numeric(sub("^\\s*([0-9]*\\.?[0-9]+)\\s+real.*$", "\\1", ln)))
+    if (is.finite(val)) return(val)
+  }
+  NA_real_
+}
+
+parse_time_l_peak_rss_mb <- function(lines) {
+  if (!length(lines)) return(NA_real_)
+  cand <- grep("maximum resident set size", lines, ignore.case = TRUE, value = TRUE)
+  if (!length(cand)) return(NA_real_)
+
+  for (ln in rev(cand)) {
+    if (grepl(":", ln, fixed = TRUE)) {
+      val <- suppressWarnings(as.numeric(trimws(sub(".*:\\s*([0-9.]+).*", "\\1", ln))))
+    } else {
+      val <- suppressWarnings(as.numeric(trimws(sub("^\\s*([0-9.]+).*", "\\1", ln))))
+    }
+    if (is.finite(val)) {
+      ln_low <- tolower(ln)
+      if (grepl("kbytes|kb", ln_low)) {
+        return(val / 1024) # kB -> MB
+      }
+      # macOS /usr/bin/time -l reports bytes for this field.
+      return(val / (1024^2)) # bytes -> MB
+    }
+  }
+  NA_real_
+}
+
+run_method_timed_worker <- function(method, d, cfg) {
+  payload_path <- tempfile(pattern = "peakrss_payload_", fileext = ".rds")
+  out_path <- tempfile(pattern = "peakrss_out_", fileext = ".rds")
+  stdout_path <- tempfile(pattern = "peakrss_stdout_", fileext = ".log")
+  stderr_path <- tempfile(pattern = "peakrss_stderr_", fileext = ".log")
+  on.exit(unlink(c(payload_path, out_path, stdout_path, stderr_path), force = TRUE), add = TRUE)
+
+  payload <- list(
+    method = method,
+    d = d,
+    cfg = worker_cfg_from_parent(cfg)
+  )
+  saveRDS(payload, payload_path)
+
+  run_args <- c(
+    "-l",
+    "Rscript",
+    "scripts/benchmark_real_l1_cv_fixed_budget.R",
+    "--worker_payload", payload_path,
+    "--worker_out", out_path
+  )
+  run_status <- tryCatch(
+    system2(
+      "/usr/bin/time",
+      run_args,
+      stdout = stdout_path,
+      stderr = stderr_path
+    ),
+    error = function(e) 1L
+  )
+  if (is.null(run_status)) run_status <- 0L
+  stderr_lines <- if (file.exists(stderr_path)) readLines(stderr_path, warn = FALSE) else character(0)
+
+  out <- if (file.exists(out_path)) readRDS(out_path) else list(ok = FALSE, error = "Missing worker output.")
+  if (run_status != 0L || !isTRUE(out$ok)) {
+    stop(sprintf(
+      "Timed worker failed for method '%s' (status=%s): %s",
+      method, as.character(run_status), as.character(out$error %||% "unknown")
+    ))
+  }
+
+  elapsed_sec <- parse_time_l_elapsed_sec(stderr_lines)
+  if (!is.finite(elapsed_sec)) {
+    stop(sprintf("Could not parse elapsed wall time from /usr/bin/time output for method '%s'.", method))
+  }
+  memory_mb <- parse_time_l_peak_rss_mb(stderr_lines)
+  if (!is.finite(memory_mb)) {
+    warning(sprintf("Could not parse peak RSS from /usr/bin/time output for method '%s'. Setting memory=0.", method))
+    memory_mb <- 0
+  }
+
+  if (!isTRUE(cfg$measure_memory)) {
+    memory_mb <- 0
+  }
+
+  list(
+    elapsed_sec = as.numeric(elapsed_sec),
+    elapsed_ms = as.numeric(elapsed_sec * 1000),
+    memory_mb = as.numeric(memory_mb),
+    test_rmse = as.numeric(out$test_rmse),
+    warning = as.character(out$warning %||% "none")
+  )
+}
+
+run_fit_worker <- function(argv) {
+  payload_path <- argv$worker_payload
+  out_path <- argv$worker_out %||% tempfile(pattern = "peakrss_worker_", fileext = ".rds")
+  payload <- readRDS(payload_path)
+  method <- payload$method
+  d <- payload$d
+  cfg <- payload$cfg
+
+  warning_msg <- "none"
+  ok <- TRUE
+  err <- ""
+
+  tryCatch({
+    test_rmse_val <- NA_real_
+    if (method == "featureless") {
+      ybar <- mean(d$y_train)
+      test_rmse_val <- rmse(d$y_test, rep(ybar, length(d$y_test)))
+    } else {
+      fit <- withCallingHandlers(
+        {
+          fit_l1(method, d, cfg)
+        },
+        warning = function(w) {
+          warning_msg <<- conditionMessage(w)
+          invokeRestart("muffleWarning")
+        }
+      )
+      if (is.null(fit)) {
+        stop("Fit failed to return coefficients for method: ", method)
+      }
+      yhat <- predict_from_beta(fit, d$X_test, d$groups_test)
+      test_rmse_val <- rmse(d$y_test, yhat)
+    }
+    out <- list(
+      ok = TRUE,
+      method = method,
+      test_rmse = test_rmse_val,
+      warning = warning_msg
+    )
+    saveRDS(out, out_path)
+  }, error = function(e) {
+    ok <<- FALSE
+    err <<- conditionMessage(e)
+    saveRDS(list(ok = FALSE, method = method, error = err), out_path)
+  })
+
+  if (!ok) {
+    stop("Worker failed: ", err)
+  }
+}
+
 argv <- parse_args(commandArgs(trailingOnly = TRUE))
 get_opt <- function(key) if (key %in% names(argv)) argv[[key]] else DEFAULTS[[key]]
+
+if (!is.null(argv$worker_payload)) {
+  run_fit_worker(argv)
+  quit(save = "no", status = 0L)
+}
 
 cfg <- list(
   data_rds = as.character(get_opt("data_rds")),
@@ -403,7 +497,11 @@ cat(sprintf("Graph structure: %s\n", cfg$g_structure))
 cat(sprintf("CV folds: %d (stratified by group)\n", cfg$folds))
 cat(sprintf("Fixed L1 budget: %d\n", cfg$l1_budget))
 cat(sprintf("Feature standardization: %s\n", ifelse(cfg$standardize, "TRUE (train-fold stats)", "FALSE")))
-cat(sprintf("Memory measurement pass: %s\n", ifelse(cfg$measure_memory, "TRUE (bench::mark mem_alloc)", "FALSE")))
+cat("Timing source: /usr/bin/time -l (worker process wall time)\n")
+cat(sprintf(
+  "Memory measurement pass: %s\n",
+  ifelse(cfg$measure_memory, "TRUE (peak RSS via /usr/bin/time -l in worker process)", "FALSE")
+))
 
 rows <- list()
 row_id <- 0L

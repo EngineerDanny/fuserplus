@@ -67,6 +67,16 @@ Default suite currently covers:
 - CountyPlus (release asset)
 - SARCOS (OpenML)
 - School grouped regression fallback from `nlme` (`MathAchieve` + `MathAchSchool`)
+- NIR Corn (Eigenvector, high-dimensional `p > n`)
+- NIR Tablets Shootout 2002 (Eigenvector, high-dimensional `p > n`)
+- NIR Tablets Shootout 2002 (hardness target, high-dimensional `p > n`)
+- SWRI Diesel NIR Cetane Number (Eigenvector, high-dimensional `p > n`)
+- SWRI Diesel NIR BP50 (Eigenvector, high-dimensional `p > n`)
+- SWRI Diesel NIR D4052 (Eigenvector, high-dimensional `p > n`)
+- SWRI Diesel NIR FREEZE (Eigenvector, high-dimensional `p > n`)
+- SWRI Diesel NIR TOTAL (Eigenvector, high-dimensional `p > n`)
+- SWRI Diesel NIR VISC (Eigenvector, high-dimensional `p > n`)
+- NCI-60 CellMiner (RNA-seq + drug response, high-dimensional `p > n`)
 
 This writes processed CSV-first outputs in per-dataset folders under `data/processed/`:
 

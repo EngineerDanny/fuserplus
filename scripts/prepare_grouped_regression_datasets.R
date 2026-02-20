@@ -23,6 +23,37 @@ download_if_missing <- function(url, dest) {
   dest
 }
 
+depmap_catalog <- function(cache_path) {
+  download_if_missing("https://depmap.org/portal/data_page/api/data", cache_path)
+  jsonlite::fromJSON(cache_path)
+}
+
+depmap_download_url <- function(catalog, file_name, release_name = NULL) {
+  if (is.null(catalog$table) || !is.data.frame(catalog$table)) {
+    stop("DepMap catalog does not contain a valid 'table' section.")
+  }
+  tab <- catalog$table
+  idx <- which(tab$fileName == file_name & !is.na(tab$downloadUrl))
+  if (!is.null(release_name)) {
+    idx <- idx[tab$releaseName[idx] == release_name]
+  }
+  if (length(idx) == 0L) {
+    msg <- if (is.null(release_name)) {
+      sprintf("Could not find DepMap file '%s'.", file_name)
+    } else {
+      sprintf("Could not find DepMap file '%s' in release '%s'.", file_name, release_name)
+    }
+    stop(msg)
+  }
+  url <- tab$downloadUrl[idx[1L]]
+  if (startsWith(url, "/")) url <- paste0("https://depmap.org", url)
+  url
+}
+
+sanitize_name <- function(x) {
+  gsub("[^A-Za-z0-9_]+", "_", x)
+}
+
 build_graphs <- function(k, dense_limit = 400L) {
   k <- as.integer(k)
   dense <- NULL
@@ -123,6 +154,7 @@ save_grouped <- function(obj, slug) {
   dataset_dir <- file.path(processed_root, slug)
   dir.create(dataset_dir, recursive = TRUE, showWarnings = FALSE)
   data_csv <- file.path(dataset_dir, "grouped_regression.csv")
+  data_rds <- file.path(dataset_dir, "grouped_regression.rds")
   meta_json <- file.path(dataset_dir, "grouped_regression_meta.json")
   chain_edges_csv <- file.path(dataset_dir, "grouped_regression_g_sparse_chain_edges.csv")
   dense_edges_csv <- file.path(dataset_dir, "grouped_regression_g_dense_edges.csv")
@@ -185,11 +217,27 @@ save_grouped <- function(obj, slug) {
     dense_edges_csv <- NA_character_
   }
 
+  # Benchmark-ready binary artifact.
+  saveRDS(
+    list(
+      X = obj$X,
+      y = obj$y,
+      groups = obj$groups,
+      group_levels = group_levels,
+      feature_names = obj$feature_names,
+      G_dense = obj$G_dense,
+      G_sparse_chain = obj$G_sparse_chain,
+      meta = obj$meta
+    ),
+    file = data_rds
+  )
+
   meta <- obj$meta
   meta$feature_names <- as.character(obj$feature_names)
   meta$group_levels <- as.character(group_levels)
   meta$output_files <- list(
     data_csv = data_csv,
+    data_rds = data_rds,
     sparse_chain_edges_csv = chain_edges_csv,
     dense_edges_csv = dense_edges_csv
   )
@@ -199,6 +247,43 @@ save_grouped <- function(obj, slug) {
   )
 
   data_csv
+}
+
+download_github_raw_if_missing <- function(repo_path, dest) {
+  # Use github.com/raw endpoint so Git LFS objects resolve to binary content.
+  url <- sprintf("https://github.com/cBioPortal/datahub/raw/master/%s", repo_path)
+  download_if_missing(url, dest)
+}
+
+read_cbio_clinical_patient <- function(path) {
+  # cBioPortal clinical files use four metadata lines before the tabular header.
+  utils::read.delim(
+    path,
+    sep = "\t",
+    skip = 4L,
+    quote = "",
+    comment.char = "",
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+}
+
+read_cbio_expression <- function(path) {
+  # Expression files are large and wide; fread is materially faster/more memory-friendly.
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    return(as.data.frame(
+      data.table::fread(path, sep = "\t", quote = "", data.table = FALSE, check.names = FALSE),
+      stringsAsFactors = FALSE
+    ))
+  }
+  utils::read.delim(
+    path,
+    sep = "\t",
+    quote = "",
+    comment.char = "",
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
 }
 
 prepare_communities <- function() {
@@ -613,6 +698,1239 @@ prepare_school_ilea <- function() {
   list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
 }
 
+prepare_nir_corn <- function() {
+  slug <- "nir_corn_high_dim"
+  mat_path <- file.path(raw_root, slug, "corn.mat")
+  download_if_missing("https://www.eigenvector.com/data/Corn/corn.mat", mat_path)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("NIR Corn requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c("m5spec", "mp5spec", "mp6spec", "propvals")
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("NIR Corn .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  x_m5 <- as.matrix(m$m5spec$data)
+  x_mp5 <- as.matrix(m$mp5spec$data)
+  x_mp6 <- as.matrix(m$mp6spec$data)
+  y_all <- as.matrix(m$propvals$data)
+  if (ncol(y_all) < 1L) stop("NIR Corn propvals has no target columns.")
+
+  # Default target is moisture (first property column in this data release).
+  y_base <- as.numeric(y_all[, 1L])
+  if (length(y_base) != nrow(x_m5) || nrow(x_m5) != nrow(x_mp5) || nrow(x_m5) != nrow(x_mp6)) {
+    stop("NIR Corn dimensions are inconsistent across instruments/targets.")
+  }
+
+  wavelengths <- tryCatch({
+    wl <- as.numeric(m$m5spec$axisscale[[2]][[1]][1, ])
+    if (length(wl) != ncol(x_m5)) stop("bad_wl_len")
+    wl
+  }, error = function(e) {
+    seq_len(ncol(x_m5))
+  })
+
+  X <- rbind(x_m5, x_mp5, x_mp6)
+  y <- rep(y_base, times = 3L)
+  grp <- c(rep("m5", nrow(x_m5)), rep("mp5", nrow(x_mp5)), rep("mp6", nrow(x_mp6)))
+
+  wl_chr <- trimws(format(wavelengths, scientific = FALSE, trim = TRUE))
+  feat_names <- paste0("wl_", gsub("[^0-9A-Za-z]+", "_", wl_chr))
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "NIR Corn (Eigenvector)",
+    source = "https://www.eigenvector.com/data/Corn/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "moisture",
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_nir_tablets_high_dim <- function() {
+  slug <- "nir_tablets_high_dim"
+  mat_path <- file.path(raw_root, slug, "nir_shootout_2002.mat")
+  download_if_missing("https://www.eigenvector.com/data/tablets/nir_shootout_2002.mat", mat_path)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("NIR Tablets requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c(
+    "calibrate.1", "calibrate.2", "validate.1", "validate.2",
+    "calibrate.Y", "validate.Y"
+  )
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("NIR Tablets .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  get_data <- function(field_name) {
+    x <- as.matrix(m[[field_name]][["data"]])
+    if (is.null(dim(x)) || nrow(x) == 0L || ncol(x) == 0L) {
+      stop("NIR Tablets field has empty data matrix: ", field_name)
+    }
+    x
+  }
+
+  x_cal_1 <- get_data("calibrate.1")
+  x_cal_2 <- get_data("calibrate.2")
+  x_val_1 <- get_data("validate.1")
+  x_val_2 <- get_data("validate.2")
+  y_cal <- get_data("calibrate.Y")
+  y_val <- get_data("validate.Y")
+
+  if (ncol(x_cal_1) != ncol(x_cal_2) || ncol(x_cal_1) != ncol(x_val_1) || ncol(x_cal_1) != ncol(x_val_2)) {
+    stop("NIR Tablets spectra dimensions are inconsistent across splits/instruments.")
+  }
+  if (nrow(x_cal_1) != nrow(y_cal) || nrow(x_val_1) != nrow(y_val)) {
+    stop("NIR Tablets spectra/response row counts are inconsistent.")
+  }
+  if (ncol(y_cal) < 3L || ncol(y_val) < 3L) {
+    stop("NIR Tablets response matrix has fewer than 3 targets.")
+  }
+
+  # Use assay target (3rd response column), and calibration+validation only so p > n.
+  target_idx <- 3L
+  target_name <- "assay"
+  try({
+    y_labels <- trimws(as.character(m[["calibrate.Y"]][["label"]][[2]][[1]][, 1]))
+    if (length(y_labels) >= target_idx && nzchar(y_labels[target_idx])) {
+      target_name <- y_labels[target_idx]
+    }
+  }, silent = TRUE)
+
+  x_1 <- rbind(x_cal_1, x_val_1)
+  x_2 <- rbind(x_cal_2, x_val_2)
+  y_1 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
+  y_2 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
+
+  wavelengths <- tryCatch({
+    wl <- as.numeric(m[["calibrate.1"]][["axisscale"]][[2]][[1]][1, ])
+    if (length(wl) != ncol(x_1)) stop("bad_wl_len")
+    wl
+  }, error = function(e) {
+    seq_len(ncol(x_1))
+  })
+
+  wl_chr <- trimws(format(wavelengths, scientific = FALSE, trim = TRUE))
+  feat_names <- paste0("wl_", gsub("[^0-9A-Za-z]+", "_", wl_chr))
+  feat_names <- make.unique(feat_names, sep = "_dup")
+
+  X <- rbind(x_1, x_2)
+  y <- c(y_1, y_2)
+  grp <- c(rep("spec_1", nrow(x_1)), rep("spec_2", nrow(x_2)))
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "NIR Tablets Shootout 2002 (Eigenvector)",
+    source = "https://www.eigenvector.com/data/tablets/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = target_name,
+      split_used = "calibrate+validate",
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_nir_tablets_hardness_high_dim <- function() {
+  slug <- "nir_tablets_hardness_high_dim"
+  mat_path <- file.path(raw_root, slug, "nir_shootout_2002.mat")
+  download_if_missing("https://www.eigenvector.com/data/tablets/nir_shootout_2002.mat", mat_path)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("NIR Tablets requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c(
+    "calibrate.1", "calibrate.2", "validate.1", "validate.2",
+    "calibrate.Y", "validate.Y"
+  )
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("NIR Tablets .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  get_data <- function(field_name) {
+    x <- as.matrix(m[[field_name]][["data"]])
+    if (is.null(dim(x)) || nrow(x) == 0L || ncol(x) == 0L) {
+      stop("NIR Tablets field has empty data matrix: ", field_name)
+    }
+    x
+  }
+
+  x_cal_1 <- get_data("calibrate.1")
+  x_cal_2 <- get_data("calibrate.2")
+  x_val_1 <- get_data("validate.1")
+  x_val_2 <- get_data("validate.2")
+  y_cal <- get_data("calibrate.Y")
+  y_val <- get_data("validate.Y")
+
+  if (ncol(x_cal_1) != ncol(x_cal_2) || ncol(x_cal_1) != ncol(x_val_1) || ncol(x_cal_1) != ncol(x_val_2)) {
+    stop("NIR Tablets spectra dimensions are inconsistent across splits/instruments.")
+  }
+  if (nrow(x_cal_1) != nrow(y_cal) || nrow(x_val_1) != nrow(y_val)) {
+    stop("NIR Tablets spectra/response row counts are inconsistent.")
+  }
+  if (ncol(y_cal) < 2L || ncol(y_val) < 2L) {
+    stop("NIR Tablets response matrix has fewer than 2 targets.")
+  }
+
+  # Use hardness target (2nd response column), and calibration+validation only so p > n.
+  target_idx <- 2L
+  target_name <- "hardness"
+  try({
+    y_labels <- trimws(as.character(m[["calibrate.Y"]][["label"]][[2]][[1]][, 1]))
+    if (length(y_labels) >= target_idx && nzchar(y_labels[target_idx])) {
+      target_name <- y_labels[target_idx]
+    }
+  }, silent = TRUE)
+
+  x_1 <- rbind(x_cal_1, x_val_1)
+  x_2 <- rbind(x_cal_2, x_val_2)
+  y_1 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
+  y_2 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
+
+  wavelengths <- tryCatch({
+    wl <- as.numeric(m[["calibrate.1"]][["axisscale"]][[2]][[1]][1, ])
+    if (length(wl) != ncol(x_1)) stop("bad_wl_len")
+    wl
+  }, error = function(e) {
+    seq_len(ncol(x_1))
+  })
+
+  wl_chr <- trimws(format(wavelengths, scientific = FALSE, trim = TRUE))
+  feat_names <- paste0("wl_", gsub("[^0-9A-Za-z]+", "_", wl_chr))
+  feat_names <- make.unique(feat_names, sep = "_dup")
+
+  X <- rbind(x_1, x_2)
+  y <- c(y_1, y_2)
+  grp <- c(rep("spec_1", nrow(x_1)), rep("spec_2", nrow(x_2)))
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "NIR Tablets Shootout 2002 (Eigenvector, hardness target)",
+    source = "https://www.eigenvector.com/data/tablets/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = target_name,
+      split_used = "calibrate+validate",
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_swri_cn_high_dim <- function() {
+  slug <- "swri_cn_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  zip_path <- file.path(raw_dir, "CNGATEST.ZIP")
+  mat_path <- file.path(raw_dir, "CNGATEST.mat")
+  download_if_missing("https://www.eigenvector.com/data/SWRI/CNGATEST.ZIP", zip_path)
+  if (!file.exists(mat_path)) utils::unzip(zip_path, exdir = raw_dir)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("SWRI CN requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c("cn.sd.hl", "cn.y.hl", "cn.sd.ll.a", "cn.sd.ll.b", "cn.y.ll.a", "cn.y.ll.b")
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("SWRI CN .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  x_hl <- as.matrix(m$cn.sd.hl)
+  y_hl <- as.numeric(m$cn.y.hl)
+  x_ll_a <- as.matrix(m$cn.sd.ll.a)
+  y_ll_a <- as.numeric(m$cn.y.ll.a)
+  x_ll_b <- as.matrix(m$cn.sd.ll.b)
+  y_ll_b <- as.numeric(m$cn.y.ll.b)
+
+  if (ncol(x_hl) != ncol(x_ll_a) || ncol(x_hl) != ncol(x_ll_b)) {
+    stop("SWRI CN spectra dimensions are inconsistent across subsets.")
+  }
+  if (nrow(x_hl) != length(y_hl) || nrow(x_ll_a) != length(y_ll_a) || nrow(x_ll_b) != length(y_ll_b)) {
+    stop("SWRI CN spectra/response row counts are inconsistent.")
+  }
+
+  X <- rbind(x_ll_a, x_ll_b, x_hl)
+  y <- c(y_ll_a, y_ll_b, y_hl)
+  grp <- c(rep("ll_a", nrow(x_ll_a)), rep("ll_b", nrow(x_ll_b)), rep("hl", nrow(x_hl)))
+
+  wl <- seq(750, by = 2, length.out = ncol(X))
+  feat_names <- paste0("wl_", wl)
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "SWRI Diesel NIR (Cetane Number, CNGATEST)",
+    source = "https://www.eigenvector.com/data/SWRI/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "CN",
+      subset_labels = c("ll_a", "ll_b", "hl"),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_swri_bp50_high_dim <- function() {
+  slug <- "swri_bp50_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  zip_path <- file.path(raw_dir, "bp50gatest.zip")
+  mat_path <- file.path(raw_dir, "BP50GATEST.mat")
+  download_if_missing("https://www.eigenvector.com/data/SWRI/bp50gatest.zip", zip_path)
+  if (!file.exists(mat_path)) utils::unzip(zip_path, exdir = raw_dir)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("SWRI BP50 requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c("bp50.s1d.hl", "bp50.y1.hl", "bp50.s1d.ll.a", "bp50.s1d.ll.b", "bp50.y1.ll.a", "bp50.y1.ll.b")
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("SWRI BP50 .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  x_hl <- as.matrix(m$bp50.s1d.hl)
+  y_hl <- as.numeric(m$bp50.y1.hl)
+  x_ll_a <- as.matrix(m$bp50.s1d.ll.a)
+  y_ll_a <- as.numeric(m$bp50.y1.ll.a)
+  x_ll_b <- as.matrix(m$bp50.s1d.ll.b)
+  y_ll_b <- as.numeric(m$bp50.y1.ll.b)
+
+  if (ncol(x_hl) != ncol(x_ll_a) || ncol(x_hl) != ncol(x_ll_b)) {
+    stop("SWRI BP50 spectra dimensions are inconsistent across subsets.")
+  }
+  if (nrow(x_hl) != length(y_hl) || nrow(x_ll_a) != length(y_ll_a) || nrow(x_ll_b) != length(y_ll_b)) {
+    stop("SWRI BP50 spectra/response row counts are inconsistent.")
+  }
+
+  X <- rbind(x_ll_a, x_ll_b, x_hl)
+  y <- c(y_ll_a, y_ll_b, y_hl)
+  grp <- c(rep("ll_a", nrow(x_ll_a)), rep("ll_b", nrow(x_ll_b)), rep("hl", nrow(x_hl)))
+
+  wl <- seq(750, by = 2, length.out = ncol(X))
+  feat_names <- paste0("wl_", wl)
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "SWRI Diesel NIR (BP50, BP50GATEST)",
+    source = "https://www.eigenvector.com/data/SWRI/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "BP50",
+      subset_labels = c("ll_a", "ll_b", "hl"),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_swri_d4052_high_dim <- function() {
+  slug <- "swri_d4052_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  zip_path <- file.path(raw_dir, "d4052gatest.zip")
+  mat_path <- file.path(raw_dir, "D4052GATEST.mat")
+  download_if_missing("https://www.eigenvector.com/data/SWRI/d4052gatest.zip", zip_path)
+  if (!file.exists(mat_path)) utils::unzip(zip_path, exdir = raw_dir)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("SWRI D4052 requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c("d.sd.hl", "d.y.hl", "d.sd.ll.a", "d.sd.ll.b", "d.y.ll.a", "d.y.ll.b")
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("SWRI D4052 .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  x_hl <- as.matrix(m$d.sd.hl)
+  y_hl <- as.numeric(m$d.y.hl)
+  x_ll_a <- as.matrix(m$d.sd.ll.a)
+  y_ll_a <- as.numeric(m$d.y.ll.a)
+  x_ll_b <- as.matrix(m$d.sd.ll.b)
+  y_ll_b <- as.numeric(m$d.y.ll.b)
+
+  if (ncol(x_hl) != ncol(x_ll_a) || ncol(x_hl) != ncol(x_ll_b)) {
+    stop("SWRI D4052 spectra dimensions are inconsistent across subsets.")
+  }
+  if (nrow(x_hl) != length(y_hl) || nrow(x_ll_a) != length(y_ll_a) || nrow(x_ll_b) != length(y_ll_b)) {
+    stop("SWRI D4052 spectra/response row counts are inconsistent.")
+  }
+
+  X <- rbind(x_ll_a, x_ll_b, x_hl)
+  y <- c(y_ll_a, y_ll_b, y_hl)
+  grp <- c(rep("ll_a", nrow(x_ll_a)), rep("ll_b", nrow(x_ll_b)), rep("hl", nrow(x_hl)))
+
+  wl <- seq(750, by = 2, length.out = ncol(X))
+  feat_names <- paste0("wl_", wl)
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "SWRI Diesel NIR (D4052, D4052GATEST)",
+    source = "https://www.eigenvector.com/data/SWRI/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "D4052",
+      subset_labels = c("ll_a", "ll_b", "hl"),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_swri_freeze_high_dim <- function() {
+  slug <- "swri_freeze_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  zip_path <- file.path(raw_dir, "freezegatest.zip")
+  mat_path <- file.path(raw_dir, "FREEZEGATEST.mat")
+  download_if_missing("https://www.eigenvector.com/data/SWRI/freezegatest.zip", zip_path)
+  if (!file.exists(mat_path)) utils::unzip(zip_path, exdir = raw_dir)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("SWRI FREEZE requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c("f.sd.hl", "f.y.hl", "f.sd.ll.a", "f.sd.ll.b", "f.y.ll.a", "f.y.ll.b")
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("SWRI FREEZE .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  x_hl <- as.matrix(m$f.sd.hl)
+  y_hl <- as.numeric(m$f.y.hl)
+  x_ll_a <- as.matrix(m$f.sd.ll.a)
+  y_ll_a <- as.numeric(m$f.y.ll.a)
+  x_ll_b <- as.matrix(m$f.sd.ll.b)
+  y_ll_b <- as.numeric(m$f.y.ll.b)
+
+  if (ncol(x_hl) != ncol(x_ll_a) || ncol(x_hl) != ncol(x_ll_b)) {
+    stop("SWRI FREEZE spectra dimensions are inconsistent across subsets.")
+  }
+  if (nrow(x_hl) != length(y_hl) || nrow(x_ll_a) != length(y_ll_a) || nrow(x_ll_b) != length(y_ll_b)) {
+    stop("SWRI FREEZE spectra/response row counts are inconsistent.")
+  }
+
+  X <- rbind(x_ll_a, x_ll_b, x_hl)
+  y <- c(y_ll_a, y_ll_b, y_hl)
+  grp <- c(rep("ll_a", nrow(x_ll_a)), rep("ll_b", nrow(x_ll_b)), rep("hl", nrow(x_hl)))
+
+  wl <- seq(750, by = 2, length.out = ncol(X))
+  feat_names <- paste0("wl_", wl)
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "SWRI Diesel NIR (FREEZE, FREEZEGATEST)",
+    source = "https://www.eigenvector.com/data/SWRI/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "FREEZE",
+      subset_labels = c("ll_a", "ll_b", "hl"),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_swri_total_high_dim <- function() {
+  slug <- "swri_total_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  zip_path <- file.path(raw_dir, "totalgatest.zip")
+  mat_path <- file.path(raw_dir, "TOTALGATEST.mat")
+  download_if_missing("https://www.eigenvector.com/data/SWRI/totalgatest.zip", zip_path)
+  if (!file.exists(mat_path)) utils::unzip(zip_path, exdir = raw_dir)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("SWRI TOTAL requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c("t.sd.hl", "t.y.hl", "t.sd.ll.a", "t.sd.ll.b", "t.y.ll.a", "t.y.ll.b")
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("SWRI TOTAL .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  x_hl <- as.matrix(m$t.sd.hl)
+  y_hl <- as.numeric(m$t.y.hl)
+  x_ll_a <- as.matrix(m$t.sd.ll.a)
+  y_ll_a <- as.numeric(m$t.y.ll.a)
+  x_ll_b <- as.matrix(m$t.sd.ll.b)
+  y_ll_b <- as.numeric(m$t.y.ll.b)
+
+  if (ncol(x_hl) != ncol(x_ll_a) || ncol(x_hl) != ncol(x_ll_b)) {
+    stop("SWRI TOTAL spectra dimensions are inconsistent across subsets.")
+  }
+  if (nrow(x_hl) != length(y_hl) || nrow(x_ll_a) != length(y_ll_a) || nrow(x_ll_b) != length(y_ll_b)) {
+    stop("SWRI TOTAL spectra/response row counts are inconsistent.")
+  }
+
+  X <- rbind(x_ll_a, x_ll_b, x_hl)
+  y <- c(y_ll_a, y_ll_b, y_hl)
+  grp <- c(rep("ll_a", nrow(x_ll_a)), rep("ll_b", nrow(x_ll_b)), rep("hl", nrow(x_hl)))
+
+  wl <- seq(750, by = 2, length.out = ncol(X))
+  feat_names <- paste0("wl_", wl)
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "SWRI Diesel NIR (TOTAL, TOTALGATEST)",
+    source = "https://www.eigenvector.com/data/SWRI/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "TOTAL",
+      subset_labels = c("ll_a", "ll_b", "hl"),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_swri_visc_high_dim <- function() {
+  slug <- "swri_visc_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  zip_path <- file.path(raw_dir, "viscgatest.zip")
+  mat_path <- file.path(raw_dir, "VISCGATEST.mat")
+  download_if_missing("https://www.eigenvector.com/data/SWRI/viscgatest.zip", zip_path)
+  if (!file.exists(mat_path)) utils::unzip(zip_path, exdir = raw_dir)
+
+  if (!requireNamespace("R.matlab", quietly = TRUE)) {
+    stop("SWRI VISC requires package 'R.matlab'. Install it and rerun.")
+  }
+
+  m <- R.matlab::readMat(mat_path)
+  required_fields <- c("v.sd.hl", "v.y.hl", "v.sd.ll.a", "v.sd.ll.b", "v.y.ll.a", "v.y.ll.b")
+  missing_fields <- setdiff(required_fields, names(m))
+  if (length(missing_fields) > 0L) {
+    stop("SWRI VISC .mat missing expected fields: ", paste(missing_fields, collapse = ", "))
+  }
+
+  x_hl <- as.matrix(m$v.sd.hl)
+  y_hl <- as.numeric(m$v.y.hl)
+  x_ll_a <- as.matrix(m$v.sd.ll.a)
+  y_ll_a <- as.numeric(m$v.y.ll.a)
+  x_ll_b <- as.matrix(m$v.sd.ll.b)
+  y_ll_b <- as.numeric(m$v.y.ll.b)
+
+  if (ncol(x_hl) != ncol(x_ll_a) || ncol(x_hl) != ncol(x_ll_b)) {
+    stop("SWRI VISC spectra dimensions are inconsistent across subsets.")
+  }
+  if (nrow(x_hl) != length(y_hl) || nrow(x_ll_a) != length(y_ll_a) || nrow(x_ll_b) != length(y_ll_b)) {
+    stop("SWRI VISC spectra/response row counts are inconsistent.")
+  }
+
+  X <- rbind(x_ll_a, x_ll_b, x_hl)
+  y <- c(y_ll_a, y_ll_b, y_hl)
+  grp <- c(rep("ll_a", nrow(x_ll_a)), rep("ll_b", nrow(x_ll_b)), rep("hl", nrow(x_hl)))
+
+  wl <- seq(750, by = 2, length.out = ncol(X))
+  feat_names <- paste0("wl_", wl)
+  d <- data.frame(group_raw = grp, y = y, X, check.names = FALSE, stringsAsFactors = FALSE)
+  names(d)[3:ncol(d)] <- feat_names
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "SWRI Diesel NIR (VISC, VISCGATEST)",
+    source = "https://www.eigenvector.com/data/SWRI/",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "VISC",
+      subset_labels = c("ll_a", "ll_b", "hl"),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_nci60_cellminer_high_dim <- function() {
+  slug <- "nci60_cellminer_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  expr_zip <- file.path(raw_dir, "nci60_rna_seq_composite_expression.zip")
+  drug_zip <- file.path(raw_dir, "dtp_nci60_zscore.zip")
+  download_if_missing(
+    "https://discover.nci.nih.gov/cellminer/download/processeddataset/nci60_RNA__RNA_seq_composite_expression.zip",
+    expr_zip
+  )
+  download_if_missing(
+    "https://discover.nci.nih.gov/cellminer/download/processeddataset/DTP_NCI60_ZSCORE.zip",
+    drug_zip
+  )
+
+  expr_dir <- file.path(raw_dir, "nci60_rna_seq")
+  drug_dir <- file.path(raw_dir, "dtp_zscore")
+  if (!dir.exists(expr_dir)) utils::unzip(expr_zip, exdir = expr_dir)
+  if (!dir.exists(drug_dir)) utils::unzip(drug_zip, exdir = drug_dir)
+
+  expr_path <- file.path(expr_dir, "output", "RNA__RNA_seq_composite_expression.xls")
+  drug_path <- file.path(drug_dir, "output", "DTP_NCI60_ZSCORE.xlsx")
+  meta_path <- file.path(expr_dir, "output", "documentation", "NCI60_CELL_LINE_METADATA.xls")
+  if (!all(file.exists(c(expr_path, drug_path, meta_path)))) {
+    stop("Missing expected NCI-60 CellMiner files after unzip.")
+  }
+  if (!requireNamespace("readxl", quietly = TRUE)) {
+    stop("NCI-60 CellMiner requires package 'readxl'. Install it and rerun.")
+  }
+
+  expr <- readxl::read_excel(expr_path, sheet = "Results", skip = 10)
+  drug <- readxl::read_excel(drug_path, sheet = "all", skip = 8)
+  meta <- readxl::read_excel(meta_path, sheet = "clc", skip = 7)
+
+  normalize_cell <- function(x) {
+    toupper(gsub("[^A-Za-z0-9]", "", x))
+  }
+  sanitize <- function(x) gsub("[^A-Za-z0-9_]+", "_", x)
+
+  expr_cell_cols <- setdiff(names(expr), names(expr)[1:6])
+  drug_cell_cols <- setdiff(names(drug), names(drug)[1:6])
+  meta_cell_col <- "Cell Line Name"
+  meta_group_col <- "tissue of origin a"
+  if (!(meta_cell_col %in% names(meta)) || !(meta_group_col %in% names(meta))) {
+    stop("NCI-60 metadata columns not found.")
+  }
+
+  expr_norm <- normalize_cell(expr_cell_cols)
+  drug_norm <- normalize_cell(drug_cell_cols)
+  meta_norm <- normalize_cell(meta[[meta_cell_col]])
+
+  common_norm <- Reduce(intersect, list(expr_norm, drug_norm, meta_norm))
+  if (length(common_norm) < 40L) {
+    stop("Insufficient matched NCI-60 cell lines across expression/drug/metadata.")
+  }
+
+  idx_expr <- match(common_norm, expr_norm)
+  idx_drug <- match(common_norm, drug_norm)
+  idx_meta <- match(common_norm, meta_norm)
+  common_cells <- expr_cell_cols[idx_expr]
+
+  x_mat <- t(as.matrix(expr[, idx_expr + 6L, drop = FALSE]))
+  storage.mode(x_mat) <- "double"
+
+  gene_name <- as.character(expr[["Gene name d"]])
+  gene_id <- suppressWarnings(as.integer(expr[["Entrez gene id e"]]))
+  feat_names <- paste0(
+    "g_",
+    ifelse(!is.na(gene_id), gene_id, seq_len(nrow(expr))),
+    "_",
+    sanitize(ifelse(is.na(gene_name), "unknown", gene_name))
+  )
+  feat_names <- make.unique(feat_names, sep = "_dup")
+  colnames(x_mat) <- feat_names
+  rownames(x_mat) <- common_cells
+
+  drug_df <- drug[, idx_drug + 6L, drop = FALSE]
+  drug_num <- suppressWarnings(do.call(cbind, lapply(drug_df, as.numeric)))
+  rownames(drug_num) <- seq_len(nrow(drug))
+  n_non_na <- rowSums(is.finite(drug_num))
+  sd_row <- apply(drug_num, 1L, function(z) stats::sd(z, na.rm = TRUE))
+  drug_name <- as.character(drug[["Drug name"]])
+  valid_name <- !is.na(drug_name) & nzchar(trimws(drug_name)) & trimws(drug_name) != "-"
+  score <- ifelse(valid_name & n_non_na >= 45L, n_non_na + 1e-6 * sd_row, -Inf)
+  best_idx <- which.max(score)
+  if (!is.finite(score[best_idx])) {
+    stop("Could not find a suitable drug response row with enough observations.")
+  }
+  y_all <- as.numeric(drug_num[best_idx, ])
+  keep <- is.finite(y_all)
+  if (sum(keep) < 40L) stop("Selected drug has too few finite response values.")
+
+  group_raw <- as.character(meta[[meta_group_col]][idx_meta])[keep]
+  y <- y_all[keep]
+  X <- x_mat[keep, , drop = FALSE]
+
+  group_counts <- table(group_raw)
+  keep_groups <- names(group_counts[group_counts >= 3L])
+  keep2 <- group_raw %in% keep_groups
+  if (sum(keep2) < 30L) stop("Too few samples after group size filtering for NCI-60.")
+
+  group_raw <- group_raw[keep2]
+  y <- y[keep2]
+  X <- X[keep2, , drop = FALSE]
+  groups <- as.integer(factor(group_raw))
+
+  graphs <- build_graphs(length(unique(groups)), dense_limit = 400L)
+  obj <- list(
+    X = X,
+    y = y,
+    groups = groups,
+    group_levels = sort(unique(group_raw)),
+    feature_names = colnames(X),
+    G_dense = graphs$G_dense,
+    G_sparse_chain = graphs$G_sparse_chain,
+    meta = list(
+      dataset = "NCI-60 CellMiner (RNA-seq + drug response)",
+      source = "https://discover.nci.nih.gov/cellminer/loadDownload.do",
+      n = nrow(X),
+      p = ncol(X),
+      k = length(unique(groups)),
+      y_col = "drug_zscore",
+      group_col = "tissue_of_origin",
+      dense_graph_limit = graphs$dense_limit,
+      target_selected = trimws(as.character(drug[["Drug name"]][best_idx])),
+      target_nsc = as.character(drug[["NSC # b"]][best_idx]),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_ccle_depmap_gdsc_high_dim <- function() {
+  slug <- "ccle_depmap_gdsc_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  catalog_path <- file.path(raw_dir, "depmap_data_catalog.json")
+  catalog <- depmap_catalog(catalog_path)
+
+  expr_release <- "DepMap Public 25Q3"
+  gdsc_release <- "Sanger GDSC1 and GDSC2"
+  expr_file <- "OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv"
+  model_file <- "Model.csv"
+  gdsc_file <- "sanger-dose-response.csv"
+
+  expr_url <- depmap_download_url(catalog, expr_file, expr_release)
+  model_url <- depmap_download_url(catalog, model_file, expr_release)
+  gdsc_url <- depmap_download_url(catalog, gdsc_file, gdsc_release)
+
+  expr_path <- file.path(raw_dir, expr_file)
+  model_path <- file.path(raw_dir, model_file)
+  gdsc_path <- file.path(raw_dir, gdsc_file)
+  download_if_missing(expr_url, expr_path)
+  download_if_missing(model_url, model_path)
+  download_if_missing(gdsc_url, gdsc_path)
+
+  expr <- utils::read.csv(expr_path, check.names = FALSE, stringsAsFactors = FALSE)
+  model <- utils::read.csv(model_path, check.names = FALSE, stringsAsFactors = FALSE)
+  gdsc <- utils::read.csv(gdsc_path, check.names = FALSE, stringsAsFactors = FALSE)
+
+  req_expr <- c("ModelID")
+  req_model <- c("ModelID", "OncotreeLineage", "OncotreePrimaryDisease", "TissueOrigin")
+  req_gdsc <- c("ARXSPAN_ID", "DRUG_NAME", "auc")
+  if (!all(req_expr %in% names(expr))) stop("DepMap expression file missing required columns.")
+  if (!all(req_model %in% names(model))) stop("DepMap model file missing required columns.")
+  if (!all(req_gdsc %in% names(gdsc))) stop("DepMap GDSC file missing required columns.")
+
+  if ("IsDefaultEntryForModel" %in% names(expr)) {
+    keep_default <- tolower(as.character(expr$IsDefaultEntryForModel)) %in% c("true", "t", "1")
+    n_per_model <- ave(seq_len(nrow(expr)), expr$ModelID, FUN = seq_along)
+    expr <- expr[keep_default | n_per_model == 1L, , drop = FALSE]
+  }
+  expr <- expr[!duplicated(expr$ModelID), , drop = FALSE]
+
+  gdsc$ARXSPAN_ID <- as.character(gdsc$ARXSPAN_ID)
+  gdsc$DRUG_NAME <- trimws(as.character(gdsc$DRUG_NAME))
+  gdsc$auc <- suppressWarnings(as.numeric(gdsc$auc))
+  gdsc <- gdsc[
+    is.finite(gdsc$auc) & nzchar(gdsc$DRUG_NAME) & !is.na(gdsc$ARXSPAN_ID),
+    c("ARXSPAN_ID", "DRUG_NAME", "auc"),
+    drop = FALSE
+  ]
+  gdsc_agg <- stats::aggregate(auc ~ ARXSPAN_ID + DRUG_NAME, data = gdsc, FUN = mean)
+
+  common_models <- intersect(as.character(expr$ModelID), as.character(gdsc_agg$ARXSPAN_ID))
+  if (length(common_models) < 50L) {
+    stop("Too few overlapping models between DepMap expression and GDSC.")
+  }
+  gdsc_agg <- gdsc_agg[gdsc_agg$ARXSPAN_ID %in% common_models, , drop = FALSE]
+
+  drug_n_df <- stats::aggregate(auc ~ DRUG_NAME, data = gdsc_agg, FUN = length)
+  names(drug_n_df)[2] <- "n"
+  drug_sd_df <- stats::aggregate(auc ~ DRUG_NAME, data = gdsc_agg, FUN = stats::sd)
+  names(drug_sd_df)[2] <- "sd"
+  drug_stats <- merge(drug_n_df, drug_sd_df, by = "DRUG_NAME", all = TRUE)
+  drug_n <- as.numeric(drug_stats$n)
+  drug_sd <- as.numeric(drug_stats$sd)
+  score <- ifelse(drug_n >= 200L & is.finite(drug_sd), drug_n + 1e-6 * drug_sd, -Inf)
+  if (!any(is.finite(score))) {
+    score <- ifelse(is.finite(drug_sd), drug_n + 1e-6 * drug_sd, -Inf)
+  }
+  best_idx <- which.max(score)
+  if (!is.finite(score[best_idx])) {
+    stop("Could not select a suitable GDSC drug target.")
+  }
+  target_selected <- as.character(drug_stats$DRUG_NAME[best_idx])
+
+  y_df <- gdsc_agg[gdsc_agg$DRUG_NAME == target_selected, c("ARXSPAN_ID", "auc"), drop = FALSE]
+  names(y_df) <- c("ModelID", "y")
+
+  expr$ModelID <- as.character(expr$ModelID)
+  d <- merge(y_df, expr, by = "ModelID", all = FALSE)
+  if (nrow(d) < 100L) stop("Too few rows after joining selected GDSC target with expression.")
+
+  model_sub <- unique(model[, req_model, drop = FALSE])
+  model_sub$ModelID <- as.character(model_sub$ModelID)
+  d <- merge(d, model_sub, by = "ModelID", all.x = TRUE)
+
+  group_raw <- as.character(d$OncotreeLineage)
+  miss <- is.na(group_raw) | !nzchar(group_raw)
+  group_raw[miss] <- as.character(d$OncotreePrimaryDisease[miss])
+  miss <- is.na(group_raw) | !nzchar(group_raw)
+  group_raw[miss] <- as.character(d$TissueOrigin[miss])
+  miss <- is.na(group_raw) | !nzchar(group_raw)
+  group_raw[miss] <- "unknown"
+  d$group_raw <- group_raw
+
+  meta_cols <- c(
+    "ModelID", "y", "group_raw",
+    "SequencingID", "IsDefaultEntryForModel", "ModelConditionID", "IsDefaultEntryForMC",
+    "OncotreeLineage", "OncotreePrimaryDisease", "TissueOrigin"
+  )
+  feature_cols <- setdiff(names(d), meta_cols)
+  if (length(feature_cols) == 0L) stop("No expression feature columns found in CCLE/DepMap data.")
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feature_cols,
+    dataset_name = "CCLE + DepMap Expression + Sanger GDSC (single-drug)",
+    source = "https://depmap.org/portal/download/all/",
+    min_group_size = 5L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = target_selected,
+      expression_file = expr_file,
+      expression_release = expr_release,
+      response_file = gdsc_file,
+      response_release = gdsc_release,
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_tcga_pan_cancer_high_dim <- function() {
+  slug <- "tcga_pan_cancer_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  studies <- c(
+    "brca_tcga_pan_can_atlas_2018",
+    "coadread_tcga_pan_can_atlas_2018",
+    "hnsc_tcga_pan_can_atlas_2018",
+    "kirc_tcga_pan_can_atlas_2018",
+    "luad_tcga_pan_can_atlas_2018",
+    "lusc_tcga_pan_can_atlas_2018"
+  )
+  expr_file <- "data_mrna_seq_v2_rsem_zscores_ref_all_samples.txt"
+  clin_file <- "data_clinical_patient.txt"
+  max_per_group <- 200L
+
+  X_list <- list()
+  y_list <- list()
+  g_list <- list()
+  per_study_n <- integer(0)
+  common_gene_names <- NULL
+
+  for (study in studies) {
+    study_dir <- file.path(raw_dir, study)
+    dir.create(study_dir, recursive = TRUE, showWarnings = FALSE)
+
+    expr_path <- file.path(study_dir, expr_file)
+    clin_path <- file.path(study_dir, clin_file)
+    download_github_raw_if_missing(file.path("public", study, expr_file), expr_path)
+    download_github_raw_if_missing(file.path("public", study, clin_file), clin_path)
+
+    clin <- read_cbio_clinical_patient(clin_path)
+    if (!all(c("PATIENT_ID", "AGE") %in% names(clin))) {
+      stop("TCGA clinical file missing PATIENT_ID/AGE for study: ", study)
+    }
+    clin$PATIENT_ID <- as.character(clin$PATIENT_ID)
+    clin$AGE <- suppressWarnings(as.numeric(clin$AGE))
+    clin <- clin[is.finite(clin$AGE) & !is.na(clin$PATIENT_ID) & nzchar(clin$PATIENT_ID), , drop = FALSE]
+    if (nrow(clin) == 0L) next
+
+    expr <- read_cbio_expression(expr_path)
+    if (ncol(expr) < 3L) stop("Unexpected TCGA expression shape for study: ", study)
+
+    symbol <- as.character(expr[[1L]])
+    entrez <- suppressWarnings(as.integer(expr[[2L]]))
+    gene_names <- paste0(
+      "g_",
+      ifelse(is.finite(entrez), entrez, seq_len(nrow(expr))),
+      "_",
+      sanitize_name(ifelse(is.na(symbol) | !nzchar(symbol), "unknown", symbol))
+    )
+    gene_names <- make.unique(gene_names, sep = "_dup")
+
+    sample_ids <- names(expr)[-(1:2)]
+    patient_ids <- substr(sample_ids, 1L, 12L)
+    sample_type <- substr(sample_ids, 14L, 15L)
+    idx_by_patient <- split(seq_along(patient_ids), patient_ids)
+    chosen <- unlist(lapply(idx_by_patient, function(ix) {
+      ix_tumor <- ix[sample_type[ix] == "01"]
+      if (length(ix_tumor) > 0L) ix_tumor[1L] else ix[1L]
+    }), use.names = FALSE)
+    chosen <- sort(unique(chosen))
+
+    chosen_patients <- patient_ids[chosen]
+    age_map <- setNames(clin$AGE, clin$PATIENT_ID)
+    valid <- !is.na(age_map[chosen_patients]) & is.finite(age_map[chosen_patients])
+    chosen <- chosen[valid]
+    chosen_patients <- chosen_patients[valid]
+    if (length(chosen) < 20L) next
+
+    x_block <- as.matrix(expr[, chosen + 2L, drop = FALSE])
+    storage.mode(x_block) <- "double"
+    X <- t(x_block)
+    rm(x_block, expr)
+    gc(verbose = FALSE)
+
+    if (is.null(common_gene_names)) {
+      common_gene_names <- gene_names
+    } else if (!identical(common_gene_names, gene_names)) {
+      stop("Gene feature ordering differs across TCGA studies; add alignment logic before continuing.")
+    }
+    colnames(X) <- common_gene_names
+
+    y <- as.numeric(age_map[chosen_patients])
+    group_raw <- if ("CANCER_TYPE_ACRONYM" %in% names(clin)) {
+      as.character(setNames(clin$CANCER_TYPE_ACRONYM, clin$PATIENT_ID)[chosen_patients])
+    } else {
+      rep(toupper(sub("_tcga_pan_can_atlas_2018$", "", study)), length(chosen_patients))
+    }
+    miss_grp <- is.na(group_raw) | !nzchar(group_raw)
+    group_raw[miss_grp] <- toupper(sub("_tcga_pan_can_atlas_2018$", "", study))
+
+    if (nrow(X) > max_per_group) {
+      keep_idx <- sort(sample.int(nrow(X), max_per_group))
+      X <- X[keep_idx, , drop = FALSE]
+      y <- y[keep_idx]
+      group_raw <- group_raw[keep_idx]
+    }
+
+    X_list[[study]] <- X
+    y_list[[study]] <- y
+    g_list[[study]] <- group_raw
+    per_study_n[study] <- nrow(X)
+  }
+
+  if (length(X_list) < 3L) {
+    stop("Too few TCGA studies successfully processed.")
+  }
+
+  X_all <- do.call(rbind, X_list)
+  y_all <- unlist(y_list, use.names = FALSE)
+  g_all <- unlist(g_list, use.names = FALSE)
+
+  if (anyNA(X_all)) {
+    for (j in seq_len(ncol(X_all))) {
+      v <- X_all[, j]
+      if (anyNA(v)) {
+        med <- stats::median(v, na.rm = TRUE)
+        if (!is.finite(med)) med <- 0
+        v[is.na(v)] <- med
+        X_all[, j] <- v
+      }
+    }
+  }
+
+  keep_var <- apply(X_all, 2L, function(z) stats::sd(z) > 0)
+  X_all <- X_all[, keep_var, drop = FALSE]
+  if (ncol(X_all) == 0L) stop("No non-constant TCGA expression features after filtering.")
+
+  groups <- as.integer(factor(g_all))
+  group_levels <- levels(factor(g_all))
+  graphs <- build_graphs(length(unique(groups)), dense_limit = 400L)
+  obj <- list(
+    X = X_all,
+    y = y_all,
+    groups = groups,
+    group_levels = group_levels,
+    feature_names = colnames(X_all),
+    G_dense = graphs$G_dense,
+    G_sparse_chain = graphs$G_sparse_chain,
+    meta = list(
+      dataset = "TCGA PanCancer Atlas (subset, expression z-scores)",
+      source = "https://github.com/cBioPortal/datahub/tree/master/public",
+      n = nrow(X_all),
+      p = ncol(X_all),
+      k = length(unique(groups)),
+      y_col = "AGE",
+      group_col = "CANCER_TYPE_ACRONYM",
+      dense_graph_limit = graphs$dense_limit,
+      target_selected = "AGE",
+      tcga_studies = studies,
+      max_per_group = max_per_group,
+      per_study_n = as.list(per_study_n),
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_abide_connectome_high_dim <- function() {
+  slug <- "abide_connectome_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  ts_dir <- file.path(raw_dir, "rois_cc200")
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(ts_dir, recursive = TRUE, showWarnings = FALSE)
+
+  pheno_url <- "https://s3.amazonaws.com/fcp-indi/data/Projects/ABIDE_Initiative/Phenotypic_V1_0b_preprocessed1.csv"
+  pheno_path <- file.path(raw_dir, "Phenotypic_V1_0b_preprocessed1.csv")
+  download_if_missing(pheno_url, pheno_path)
+  pheno <- utils::read.csv(pheno_path, stringsAsFactors = FALSE)
+
+  required <- c("FILE_ID", "SITE_ID", "AGE_AT_SCAN")
+  if (!all(required %in% names(pheno))) {
+    stop("ABIDE phenotypic file missing required columns: ", paste(setdiff(required, names(pheno)), collapse = ", "))
+  }
+
+  pheno$FILE_ID <- as.character(pheno$FILE_ID)
+  pheno$SITE_ID <- as.character(pheno$SITE_ID)
+  pheno$AGE_AT_SCAN <- suppressWarnings(as.numeric(pheno$AGE_AT_SCAN))
+  pheno <- pheno[
+    !is.na(pheno$FILE_ID) &
+      pheno$FILE_ID != "" &
+      pheno$FILE_ID != "no_filename" &
+      !is.na(pheno$SITE_ID) &
+      pheno$SITE_ID != "" &
+      is.finite(pheno$AGE_AT_SCAN),
+    c("FILE_ID", "SITE_ID", "AGE_AT_SCAN"),
+    drop = FALSE
+  ]
+  if (nrow(pheno) == 0L) stop("No usable ABIDE rows after phenotypic filtering.")
+
+  min_group_size <- 20L
+  max_sites <- 10L
+  max_per_group <- 35L
+  site_counts <- sort(table(pheno$SITE_ID), decreasing = TRUE)
+  kept_sites <- names(site_counts[site_counts >= min_group_size])
+  if (length(kept_sites) == 0L) stop("No ABIDE sites pass min_group_size filtering.")
+  kept_sites <- head(kept_sites, max_sites)
+  pheno <- pheno[pheno$SITE_ID %in% kept_sites, , drop = FALSE]
+
+  split_by_site <- split(pheno, pheno$SITE_ID)
+  for (site in names(split_by_site)) {
+    d <- split_by_site[[site]]
+    if (nrow(d) > max_per_group) {
+      idx <- sort(sample.int(nrow(d), max_per_group))
+      split_by_site[[site]] <- d[idx, , drop = FALSE]
+    }
+  }
+  pheno_sub <- do.call(rbind, split_by_site)
+  rownames(pheno_sub) <- NULL
+
+  ts_url <- function(fid) {
+    sprintf(
+      "https://s3.amazonaws.com/fcp-indi/data/Projects/ABIDE_Initiative/Outputs/cpac/filt_global/rois_cc200/%s_rois_cc200.1D",
+      fid
+    )
+  }
+
+  get_connectome_vec <- function(fid) {
+    local_path <- file.path(ts_dir, paste0(fid, "_rois_cc200.1D"))
+    ok <- TRUE
+    tryCatch(download_if_missing(ts_url(fid), local_path), error = function(e) ok <<- FALSE)
+    if (!ok || !file.exists(local_path)) return(NULL)
+
+    ts <- tryCatch(
+      utils::read.table(local_path, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE),
+      error = function(e) NULL
+    )
+    if (is.null(ts) || ncol(ts) < 50L || nrow(ts) < 20L) return(NULL)
+    M <- as.matrix(ts)
+    storage.mode(M) <- "double"
+    keep_var <- apply(M, 2L, function(z) stats::sd(z, na.rm = TRUE) > 0)
+    M <- M[, keep_var, drop = FALSE]
+    if (ncol(M) < 150L) return(NULL)
+
+    C <- stats::cor(M, use = "pairwise.complete.obs")
+    C[!is.finite(C)] <- 0
+    diag(C) <- 0
+    C[upper.tri(C, diag = FALSE)]
+  }
+
+  rows <- vector("list", nrow(pheno_sub))
+  used <- 0L
+  expected_p <- NULL
+  feature_names <- NULL
+  for (i in seq_len(nrow(pheno_sub))) {
+    fid <- pheno_sub$FILE_ID[i]
+    vec <- get_connectome_vec(fid)
+    if (is.null(vec)) next
+    if (is.null(expected_p)) {
+      expected_p <- length(vec)
+      feature_names <- paste0("conn_", seq_len(expected_p))
+    }
+    if (length(vec) != expected_p) next
+    used <- used + 1L
+    rows[[used]] <- list(
+      y = as.numeric(pheno_sub$AGE_AT_SCAN[i]),
+      group_raw = as.character(pheno_sub$SITE_ID[i]),
+      x = as.numeric(vec)
+    )
+  }
+
+  if (used < 200L) stop("Too few ABIDE subjects with usable connectome vectors.")
+  rows <- rows[seq_len(used)]
+  y <- vapply(rows, function(r) r$y, numeric(1))
+  grp <- vapply(rows, function(r) r$group_raw, character(1))
+  X <- do.call(rbind, lapply(rows, function(r) r$x))
+  colnames(X) <- feature_names
+
+  # Final group-size filter after availability checks.
+  counts <- table(grp)
+  keep_groups <- names(counts[counts >= min_group_size])
+  keep <- grp %in% keep_groups
+  X <- X[keep, , drop = FALSE]
+  y <- y[keep]
+  grp <- grp[keep]
+  if (nrow(X) < 150L) stop("Too few ABIDE rows after final group-size filtering.")
+
+  groups <- as.integer(factor(grp))
+  group_levels <- levels(factor(grp))
+  graphs <- build_graphs(length(unique(groups)), dense_limit = 400L)
+  obj <- list(
+    X = X,
+    y = y,
+    groups = groups,
+    group_levels = group_levels,
+    feature_names = colnames(X),
+    G_dense = graphs$G_dense,
+    G_sparse_chain = graphs$G_sparse_chain,
+    meta = list(
+      dataset = "ABIDE I Preprocessed Connectome (CC200, CPAC filt_global)",
+      source = "https://preprocessed-connectomes-project.org/abide/",
+      n = nrow(X),
+      p = ncol(X),
+      k = length(unique(groups)),
+      y_col = "AGE_AT_SCAN",
+      group_col = "SITE_ID",
+      dense_graph_limit = graphs$dense_limit,
+      target_selected = "AGE",
+      pipeline = "cpac",
+      strategy = "filt_global",
+      derivative = "rois_cc200",
+      min_group_size = min_group_size,
+      max_sites = max_sites,
+      max_per_group = max_per_group,
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
 dataset_fns <- list(
   communities_crime = prepare_communities,
   wine_quality = prepare_wine_quality,
@@ -625,7 +1943,20 @@ dataset_fns <- list(
   noaa_ghcn = prepare_noaa_ghcn,
   countyplus = prepare_countyplus,
   sarcos_openml = prepare_sarcos_openml,
-  school_ilea = prepare_school_ilea
+  school_ilea = prepare_school_ilea,
+  nir_corn_high_dim = prepare_nir_corn,
+  nir_tablets_high_dim = prepare_nir_tablets_high_dim,
+  nir_tablets_hardness_high_dim = prepare_nir_tablets_hardness_high_dim,
+  swri_cn_high_dim = prepare_swri_cn_high_dim,
+  swri_bp50_high_dim = prepare_swri_bp50_high_dim,
+  swri_d4052_high_dim = prepare_swri_d4052_high_dim,
+  swri_freeze_high_dim = prepare_swri_freeze_high_dim,
+  swri_total_high_dim = prepare_swri_total_high_dim,
+  swri_visc_high_dim = prepare_swri_visc_high_dim,
+  nci60_cellminer_high_dim = prepare_nci60_cellminer_high_dim,
+  ccle_depmap_gdsc_high_dim = prepare_ccle_depmap_gdsc_high_dim,
+  tcga_pan_cancer_high_dim = prepare_tcga_pan_cancer_high_dim,
+  abide_connectome_high_dim = prepare_abide_connectome_high_dim
 )
 
 requested <- commandArgs(trailingOnly = TRUE)
@@ -637,7 +1968,17 @@ results <- list()
 for (nm in requested) {
   cat(sprintf("[%-22s] running...\n", nm))
   fn <- dataset_fns[[nm]]
-  row <- list(dataset = nm, status = "ok", message = "", path = NA_character_, n = NA_integer_, p = NA_integer_, k = NA_integer_)
+  row <- list(
+    dataset = nm,
+    status = "ok",
+    message = "",
+    path = NA_character_,
+    n = NA_integer_,
+    p = NA_integer_,
+    k = NA_integer_,
+    p_gt_n = NA,
+    regime = NA_character_
+  )
   out <- tryCatch({
     out <- fn()
     list(ok = TRUE, out = out, msg = "")
@@ -649,6 +1990,8 @@ for (nm in requested) {
     row$n <- out$out$n %||% NA_integer_
     row$p <- out$out$p %||% NA_integer_
     row$k <- out$out$k %||% NA_integer_
+    row$p_gt_n <- is.finite(row$p) && is.finite(row$n) && (row$p > row$n)
+    row$regime <- if (isTRUE(row$p_gt_n)) "real_high_dim" else "real_standard"
     if (!is.null(out$out$target)) row$message <- paste("target:", out$out$target)
     cat(sprintf("[%-22s] ok  n=%s p=%s k=%s\n", nm, row$n, row$p, row$k))
   } else {
@@ -659,7 +2002,240 @@ for (nm in requested) {
   results[[length(results) + 1L]] <- row
 }
 
-summary_df <- do.call(rbind, lapply(results, as.data.frame, stringsAsFactors = FALSE))
+build_summary_from_processed <- function(processed_root) {
+  license_record_for_dataset <- function(dataset_slug, source_url) {
+    default <- list(
+      license_status = "unknown",
+      license_name = NA_character_,
+      license_link = NA_character_,
+      license_notes = NA_character_
+    )
+
+    uci_links <- c(
+      communities_crime = "https://archive.ics.uci.edu/dataset/183/communities+and+crime",
+      wine_quality = "https://archive.ics.uci.edu/dataset/186/wine+quality",
+      student_performance = "https://archive.ics.uci.edu/dataset/320/student+performance",
+      beijing_air_quality = "https://archive.ics.uci.edu/dataset/501/beijing+multi+site+air+quality+data",
+      electricity_load = "https://archive.ics.uci.edu/dataset/321/electricityloaddiagrams20112014"
+    )
+    if (dataset_slug %in% names(uci_links)) {
+      return(list(
+        license_status = "open",
+        license_name = "CC BY 4.0",
+        license_link = uci_links[[dataset_slug]],
+        license_notes = "UCI dataset page indicates Creative Commons Attribution 4.0."
+      ))
+    }
+
+    if (dataset_slug == "owid_co2") {
+      return(list(
+        license_status = "mixed_open_with_exceptions",
+        license_name = "CC BY 4.0 (OWID-produced components)",
+        license_link = "https://github.com/owid/co2-data",
+        license_notes = "OWID data are CC BY 4.0; some upstream source components may carry separate terms."
+      ))
+    }
+
+    if (dataset_slug == "world_bank_wdi") {
+      return(list(
+        license_status = "mixed_open_with_exceptions",
+        license_name = "CC BY 4.0 (default)",
+        license_link = "https://www.worldbank.org/en/about/legal/terms-of-use-for-datasets",
+        license_notes = "World Bank data are CC BY 4.0 by default, with possible third-party indicator exceptions."
+      ))
+    }
+
+    if (dataset_slug == "countyplus") {
+      return(list(
+        license_status = "open",
+        license_name = "MIT",
+        license_link = "https://github.com/Clpr/CountyPlus/releases/tag/v0.0.2",
+        license_notes = "Repository license file is MIT."
+      ))
+    }
+
+    if (dataset_slug == "sarcos_openml") {
+      return(list(
+        license_status = "open",
+        license_name = "Public (OpenML metadata)",
+        license_link = "https://www.openml.org/api/v1/json/data/43873",
+        license_notes = "OpenML metadata lists dataset licence as Public."
+      ))
+    }
+
+    if (dataset_slug == "school_ilea") {
+      return(list(
+        license_status = "open",
+        license_name = "GPL-2 | GPL-3",
+        license_link = "https://cran.r-project.org/package=nlme",
+        license_notes = "Derived from datasets shipped in CRAN nlme package."
+      ))
+    }
+
+    if (dataset_slug == "nyc_tlc") {
+      return(list(
+        license_status = "open",
+        license_name = "NYC Open Data terms",
+        license_link = "https://opendata.cityofnewyork.us/overview/",
+        license_notes = "Subject to NYC Open Data terms of use."
+      ))
+    }
+
+    if (dataset_slug == "noaa_ghcn") {
+      return(list(
+        license_status = "open",
+        license_name = "NOAA open/public data",
+        license_link = "https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ncdc:C00861",
+        license_notes = "Open government data with attribution/citation guidance."
+      ))
+    }
+
+    if (dataset_slug == "tcga_pan_cancer_high_dim") {
+      return(list(
+        license_status = "open",
+        license_name = "ODbL",
+        license_link = "https://github.com/cBioPortal/datahub",
+        license_notes = "cBioPortal datahub states ODbL."
+      ))
+    }
+
+    if (dataset_slug == "abide_connectome_high_dim") {
+      return(list(
+        license_status = "restricted_noncommercial",
+        license_name = "Attribution Non-Commercial",
+        license_link = "https://www.nitrc.org/projects/fcon_1000",
+        license_notes = "ABIDE/FCP terms indicate non-commercial restriction."
+      ))
+    }
+
+    if (dataset_slug == "nci60_cellminer_high_dim") {
+      return(list(
+        license_status = "unclear_contact_required",
+        license_name = "CellMiner terms/citation-required",
+        license_link = "https://discover.nci.nih.gov/cellminer/loadDownload.do",
+        license_notes = "NIH/NCI pages include citation and third-party rights caveats; confirm reuse terms before publication redistribution."
+      ))
+    }
+
+    if (dataset_slug == "ccle_depmap_gdsc_high_dim") {
+      return(list(
+        license_status = "restricted_noncommercial",
+        license_name = "Research/non-commercial terms",
+        license_link = paste(
+          "https://depmap.org/portal/terms/",
+          "https://www.cancerrxgene.org/downloads",
+          sep = "; "
+        ),
+        license_notes = "DepMap and GDSC data have research/non-commercial usage restrictions."
+      ))
+    }
+
+    if (startsWith(dataset_slug, "nir_") || startsWith(dataset_slug, "swri_")) {
+      eigenvector_license_pages <- c(
+        nir_corn_high_dim = "https://eigenvector.com/resources/data-sets/nir-of-corn-samples-for-standardization-benchmarking/",
+        nir_tablets_high_dim = "https://eigenvector.com/resources/data-sets/nir-spectra-of-pharmaceutical-tablets-from-shootout/",
+        nir_tablets_hardness_high_dim = "https://eigenvector.com/resources/data-sets/nir-spectra-of-pharmaceutical-tablets-from-shootout/",
+        swri_bp50_high_dim = "https://eigenvector.com/resources/data-sets/near-infrared-spectra-of-diesel-fuels/",
+        swri_cn_high_dim = "https://eigenvector.com/resources/data-sets/near-infrared-spectra-of-diesel-fuels/",
+        swri_d4052_high_dim = "https://eigenvector.com/resources/data-sets/near-infrared-spectra-of-diesel-fuels/",
+        swri_freeze_high_dim = "https://eigenvector.com/resources/data-sets/near-infrared-spectra-of-diesel-fuels/",
+        swri_total_high_dim = "https://eigenvector.com/resources/data-sets/near-infrared-spectra-of-diesel-fuels/",
+        swri_visc_high_dim = "https://eigenvector.com/resources/data-sets/near-infrared-spectra-of-diesel-fuels/"
+      )
+      lic_link <- eigenvector_license_pages[[dataset_slug]] %||% as.character(source_url)
+      return(list(
+        license_status = "unclear_contact_required",
+        license_name = "No explicit downstream reuse license",
+        license_link = lic_link,
+        license_notes = paste(
+          "Pages provide provenance and indicate permission for Eigenvector to post/distribute,",
+          "but do not publish a clear downstream open-data reuse license."
+        )
+      ))
+    }
+
+    default
+  }
+
+  meta_files <- list.files(
+    processed_root,
+    pattern = "grouped_regression_meta\\.json$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  if (length(meta_files) == 0L) {
+    return(data.frame(
+      dataset = character(0),
+      status = character(0),
+      message = character(0),
+      path = character(0),
+      n = integer(0),
+      p = integer(0),
+      k = integer(0),
+      p_gt_n = logical(0),
+      regime = character(0),
+      source = character(0),
+      license_status = character(0),
+      license_name = character(0),
+      license_link = character(0),
+      license_notes = character(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  rows <- lapply(meta_files, function(meta_path) {
+    meta <- jsonlite::fromJSON(meta_path)
+    dataset_slug <- basename(dirname(meta_path))
+    n <- as.integer(meta$n %||% NA_integer_)
+    p <- as.integer(meta$p %||% NA_integer_)
+    k <- as.integer(meta$k %||% NA_integer_)
+    p_gt_n <- if (is.finite(n) && is.finite(p)) p > n else NA
+    regime <- meta$regime %||% if (isTRUE(p_gt_n)) "real_high_dim" else "real_standard"
+    msg <- if (!is.null(meta$target_selected)) paste("target:", meta$target_selected) else ""
+    source <- meta$source %||% NA_character_
+    license <- license_record_for_dataset(dataset_slug, source)
+    data.frame(
+      dataset = dataset_slug,
+      status = "ok",
+      message = msg,
+      path = file.path(dirname(meta_path), "grouped_regression.csv"),
+      n = n,
+      p = p,
+      k = k,
+      p_gt_n = p_gt_n,
+      regime = regime,
+      source = as.character(source),
+      license_status = as.character(license$license_status),
+      license_name = as.character(license$license_name),
+      license_link = as.character(license$license_link),
+      license_notes = as.character(license$license_notes),
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, rows)
+  out[order(out$dataset), , drop = FALSE]
+}
+
+summary_df <- build_summary_from_processed(processed_root)
+
+run_df <- do.call(rbind, lapply(results, as.data.frame, stringsAsFactors = FALSE))
+failed_df <- run_df[run_df$status == "failed", c("dataset", "status", "message", "path", "n", "p", "k", "p_gt_n", "regime"), drop = FALSE]
+if (nrow(failed_df) > 0L) {
+  failed_df$source <- NA_character_
+  failed_df$license_status <- "unknown"
+  failed_df$license_name <- NA_character_
+  failed_df$license_link <- NA_character_
+  failed_df$license_notes <- NA_character_
+  failed_df <- failed_df[, colnames(summary_df), drop = FALSE]
+}
+if (nrow(failed_df) > 0L) {
+  missing_failed <- failed_df[!(failed_df$dataset %in% summary_df$dataset), , drop = FALSE]
+  if (nrow(missing_failed) > 0L) {
+    summary_df <- rbind(summary_df, missing_failed)
+    summary_df <- summary_df[order(summary_df$dataset), , drop = FALSE]
+  }
+}
+
 summary_path <- file.path(processed_root, "grouped_regression_datasets_summary.csv")
 utils::write.csv(summary_df, summary_path, row.names = FALSE)
 
