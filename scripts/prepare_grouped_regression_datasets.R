@@ -18,9 +18,32 @@ dir.create(processed_root, recursive = TRUE, showWarnings = FALSE)
 download_if_missing <- function(url, dest) {
   dir.create(dirname(dest), recursive = TRUE, showWarnings = FALSE)
   if (!file.exists(dest)) {
+    old_timeout <- getOption("timeout")
+    on.exit(options(timeout = old_timeout), add = TRUE)
+    options(timeout = max(1800L, old_timeout))
     utils::download.file(url, destfile = dest, mode = "wb", quiet = TRUE)
   }
   dest
+}
+
+read_csv_select <- function(path, select = NULL, ...) {
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    out <- data.table::fread(
+      path,
+      select = select,
+      data.table = FALSE,
+      showProgress = FALSE,
+      ...
+    )
+    return(as.data.frame(out, stringsAsFactors = FALSE))
+  }
+
+  out <- utils::read.csv(path, check.names = FALSE, stringsAsFactors = FALSE, ...)
+  if (!is.null(select)) {
+    keep <- intersect(select, names(out))
+    out <- out[, keep, drop = FALSE]
+  }
+  out
 }
 
 depmap_catalog <- function(cache_path) {
@@ -614,6 +637,284 @@ prepare_world_bank_wdi <- function() {
     dataset_name = "World Bank WDI",
     source = "https://data.worldbank.org",
     max_rows = 200000L
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_epa_aqs_pm25 <- function() {
+  slug <- "epa_aqs_pm25"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  years <- 2025:2018
+  zip_path <- NULL
+  src_url <- NULL
+  src_year <- NA_integer_
+  for (yy in years) {
+    cand_url <- sprintf("https://aqs.epa.gov/aqsweb/airdata/daily_88101_%d.zip", yy)
+    cand_zip <- file.path(raw_dir, sprintf("daily_88101_%d.zip", yy))
+    ok <- TRUE
+    tryCatch(download_if_missing(cand_url, cand_zip), error = function(e) ok <<- FALSE)
+    if (isTRUE(ok) && file.exists(cand_zip)) {
+      zip_path <- cand_zip
+      src_url <- cand_url
+      src_year <- yy
+      break
+    }
+  }
+  if (is.null(zip_path)) stop("Could not download EPA AQS PM2.5 daily file for years 2018-2025.")
+
+  zlist <- utils::unzip(zip_path, list = TRUE)
+  if (nrow(zlist) == 0L) stop("EPA AQS zip archive has no files: ", zip_path)
+  con <- unz(zip_path, zlist$Name[1L])
+  on.exit(try(close(con), silent = TRUE), add = TRUE)
+  d <- utils::read.csv(con, check.names = FALSE, stringsAsFactors = FALSE)
+
+  req <- c(
+    "State Code", "County Code", "Site Num", "Date Local", "Arithmetic Mean",
+    "Observation Count", "Observation Percent", "1st Max Value", "AQI", "Latitude", "Longitude"
+  )
+  miss <- setdiff(req, names(d))
+  if (length(miss) > 0L) stop("EPA AQS PM2.5 columns missing: ", paste(miss, collapse = ", "))
+
+  d$site_id <- sprintf(
+    "%02d-%03d-%04d",
+    as.integer(d[["State Code"]]),
+    as.integer(d[["County Code"]]),
+    as.integer(d[["Site Num"]])
+  )
+  d$date_local <- as.Date(d[["Date Local"]])
+  d$day_of_year <- as.integer(format(d$date_local, "%j"))
+  d$month <- as.integer(format(d$date_local, "%m"))
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "Arithmetic Mean",
+    group_col = "site_id",
+    feature_cols = c(
+      "Observation Count", "Observation Percent", "1st Max Value",
+      "AQI", "Latitude", "Longitude", "day_of_year", "month"
+    ),
+    dataset_name = "EPA AQS Daily PM2.5",
+    source = src_url,
+    min_group_size = 20L,
+    max_rows = 200000L,
+    extra_meta = list(target_selected = "Arithmetic Mean", parameter_code = 88101, year = src_year)
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_nyc_tlc_yellow_2022 <- function() {
+  slug <- "nyc_tlc_yellow_2022"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  csv_path <- file.path(raw_dir, "source.csv")
+
+  query_url <- paste0(
+    "https://data.cityofnewyork.us/resource/qp3b-zxtp.csv?",
+    "$select=tpep_pickup_datetime,tpep_dropoff_datetime,passenger_count,trip_distance,",
+    "ratecodeid,pulocationid,dolocationid,payment_type,total_amount&",
+    "$where=trip_distance%20%3E%200%20AND%20passenger_count%20%3E%200%20AND%20",
+    "pulocationid%20IS%20NOT%20NULL%20AND%20tpep_pickup_datetime%20IS%20NOT%20NULL%20AND%20",
+    "tpep_dropoff_datetime%20IS%20NOT%20NULL&$limit=250000"
+  )
+  download_if_missing(query_url, csv_path)
+  d <- utils::read.csv(csv_path, check.names = FALSE, stringsAsFactors = FALSE)
+
+  req <- c("tpep_pickup_datetime", "tpep_dropoff_datetime", "pulocationid", "trip_distance", "passenger_count", "total_amount")
+  miss <- setdiff(req, names(d))
+  if (length(miss) > 0L) stop("NYC TLC columns missing: ", paste(miss, collapse = ", "))
+
+  d$pickup_dt <- as.POSIXct(d$tpep_pickup_datetime, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+  d$dropoff_dt <- as.POSIXct(d$tpep_dropoff_datetime, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+  d$trip_duration_min <- as.numeric(difftime(d$dropoff_dt, d$pickup_dt, units = "mins"))
+  d$pickup_hour <- as.integer(format(d$pickup_dt, "%H"))
+  d$pickup_wday <- as.integer(format(d$pickup_dt, "%u"))
+  d$pickup_month <- as.integer(format(d$pickup_dt, "%m"))
+
+  d <- d[is.finite(d$trip_duration_min) & d$trip_duration_min > 1 & d$trip_duration_min < 240, , drop = FALSE]
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "trip_duration_min",
+    group_col = "pulocationid",
+    feature_cols = c(
+      "trip_distance", "passenger_count", "ratecodeid", "dolocationid",
+      "payment_type", "total_amount", "pickup_hour", "pickup_wday", "pickup_month"
+    ),
+    dataset_name = "NYC TLC Yellow Taxi 2022",
+    source = "https://data.cityofnewyork.us/Transportation/2022-Yellow-Taxi-Trip-Data/qp3b-zxtp",
+    min_group_size = 50L,
+    max_rows = 200000L,
+    extra_meta = list(target_selected = "trip_duration_min")
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_king_county_house_sales <- function() {
+  slug <- "king_county_house_sales"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  csv_path <- file.path(raw_dir, "source.csv")
+  url <- "https://www.openml.org/data/get_csv/21578898/house_sales.csv"
+  download_if_missing(url, csv_path)
+  d <- utils::read.csv(csv_path, check.names = FALSE, stringsAsFactors = FALSE)
+
+  req <- c("price", "zipcode", "date")
+  miss <- setdiff(req, names(d))
+  if (length(miss) > 0L) stop("King County house-sales columns missing: ", paste(miss, collapse = ", "))
+
+  ds <- as.character(d$date)
+  d$sale_year <- suppressWarnings(as.integer(substr(ds, 1L, 4L)))
+  d$sale_month <- suppressWarnings(as.integer(substr(ds, 5L, 6L)))
+  d$sale_day <- suppressWarnings(as.integer(substr(ds, 7L, 8L)))
+
+  feature_cols <- c(
+    "bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors", "waterfront", "view",
+    "condition", "grade", "sqft_above", "sqft_basement", "yr_built", "yr_renovated",
+    "lat", "long", "sqft_living15", "sqft_lot15", "sale_year", "sale_month", "sale_day"
+  )
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "price",
+    group_col = "zipcode",
+    feature_cols = feature_cols,
+    dataset_name = "King County House Sales",
+    source = "https://www.openml.org/d/42092",
+    min_group_size = 20L,
+    max_rows = NULL,
+    extra_meta = list(target_selected = "price")
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_openpowerlifting_totalkg <- function() {
+  slug <- "openpowerlifting_totalkg"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  zip_path <- file.path(raw_dir, "openpowerlifting-latest.zip")
+  source_url <- "https://openpowerlifting.gitlab.io/opl-csv/files/openpowerlifting-latest.zip"
+  download_if_missing(source_url, zip_path)
+
+  zlist <- utils::unzip(zip_path, list = TRUE)
+  csv_rel <- zlist$Name[grepl("\\.csv$", zlist$Name)]
+  if (length(csv_rel) == 0L) stop("OpenPowerlifting archive contains no CSV file.")
+  csv_rel <- csv_rel[1L]
+  csv_abs <- file.path(raw_dir, csv_rel)
+  if (!file.exists(csv_abs)) {
+    utils::unzip(zip_path, files = csv_rel, exdir = raw_dir)
+  }
+
+  select_cols <- c(
+    "Name", "Sex", "Event", "Equipment", "Age", "Division", "BodyweightKg", "TotalKg",
+    "Tested", "Country", "Federation", "Date", "MeetCountry", "MeetState"
+  )
+  d <- read_csv_select(csv_abs, select = select_cols)
+  miss <- setdiff(c("Name", "BodyweightKg", "TotalKg"), names(d))
+  if (length(miss) > 0L) stop("OpenPowerlifting columns missing: ", paste(miss, collapse = ", "))
+
+  d$Name <- trimws(as.character(d$Name))
+  d$Country <- as.character(d$Country)
+  d$group_lifter <- ifelse(!is.na(d$Country) & nzchar(d$Country), paste(d$Name, d$Country, sep = "|"), d$Name)
+  d$meet_year <- suppressWarnings(as.integer(substr(as.character(d$Date), 1L, 4L)))
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "TotalKg",
+    group_col = "group_lifter",
+    feature_cols = c(
+      "BodyweightKg", "Age", "Sex", "Event", "Equipment", "Division",
+      "Tested", "Federation", "MeetCountry", "MeetState", "meet_year"
+    ),
+    dataset_name = "OpenPowerlifting Results",
+    source = source_url,
+    min_group_size = 3L,
+    max_rows = 250000L,
+    extra_meta = list(target_selected = "TotalKg")
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+find_latest_usda_crops_url <- function() {
+  idx_url <- "https://www.nass.usda.gov/datasets"
+  idx_path <- tempfile(fileext = ".html")
+  utils::download.file(idx_url, idx_path, mode = "wb", quiet = TRUE)
+  lines <- readLines(idx_path, warn = FALSE)
+  hits <- regmatches(lines, gregexpr("qs\\.crops_[0-9]{8}\\.txt\\.gz", lines))
+  hits <- unique(unlist(hits))
+  hits <- hits[nzchar(hits)]
+  if (length(hits) == 0L) {
+    stop("Could not locate qs.crops_*.txt.gz link on USDA NASS datasets page.")
+  }
+  dates <- as.integer(sub("qs\\.crops_([0-9]{8})\\.txt\\.gz", "\\1", hits))
+  fname <- hits[which.max(dates)]
+  sprintf("https://www.nass.usda.gov/datasets/%s", fname)
+}
+
+prepare_usda_nass_corn_yield <- function() {
+  slug <- "usda_nass_corn_yield"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  crops_url <- find_latest_usda_crops_url()
+  gz_path <- file.path(raw_dir, basename(crops_url))
+  filtered_tsv <- file.path(raw_dir, "corn_county_yield_annual.tsv")
+
+  if (file.exists(gz_path)) {
+    sz <- file.info(gz_path)$size
+    # Guard against interrupted downloads; USDA crops archive should be well above this size.
+    if (is.finite(sz) && sz < 5e8) {
+      file.remove(gz_path)
+    }
+  }
+  download_if_missing(crops_url, gz_path)
+  if (!file.exists(filtered_tsv)) {
+    awk_expr <- paste0(
+      "NR==1 || ($1==\"SURVEY\" && $2==\"CROPS\" && $3==\"FIELD CROPS\" && ",
+      "$8==\"YIELD\" && $9==\"BU / ACRE\" && $13==\"COUNTY\" && $32==\"ANNUAL\" && $4 ~ /^CORN/)"
+    )
+    cmd <- sprintf(
+      "gzip -cd %s | awk -F '\\t' '%s' > %s",
+      shQuote(gz_path), awk_expr, shQuote(filtered_tsv)
+    )
+    st <- system(cmd, intern = FALSE, ignore.stderr = FALSE)
+    if (!identical(st, 0L)) {
+      stop("Failed filtering USDA NASS crops file with awk (exit=", st, ").")
+    }
+  }
+
+  d <- utils::read.delim(filtered_tsv, sep = "\t", quote = "", check.names = FALSE, stringsAsFactors = FALSE)
+  req <- c("STATE_ANSI", "COUNTY_ANSI", "YEAR", "VALUE")
+  miss <- setdiff(req, names(d))
+  if (length(miss) > 0L) stop("USDA NASS columns missing: ", paste(miss, collapse = ", "))
+
+  d$yield_bu_acre <- suppressWarnings(as.numeric(gsub(",", "", d$VALUE, fixed = TRUE)))
+  d$cv_num <- suppressWarnings(as.numeric(gsub("[^0-9.\\-]", "", d$`CV_%`)))
+  d$state_code <- sprintf("%02d", as.integer(d$STATE_ANSI))
+  d$county_code <- sprintf("%03d", as.integer(d$COUNTY_ANSI))
+  d$county_fips <- paste0(d$state_code, d$county_code)
+  d$year <- as.integer(d$YEAR)
+
+  d <- d[is.finite(d$yield_bu_acre) & is.finite(d$year), , drop = FALSE]
+  d <- d[order(d$county_fips, d$year), , drop = FALSE]
+  d$yield_lag1 <- ave(d$yield_bu_acre, d$county_fips, FUN = function(z) c(NA_real_, z[-length(z)]))
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "yield_bu_acre",
+    group_col = "county_fips",
+    feature_cols = c("year", "state_code", "cv_num", "yield_lag1"),
+    dataset_name = "USDA NASS Corn Yield (County Annual)",
+    source = crops_url,
+    min_group_size = 10L,
+    max_rows = 250000L,
+    extra_meta = list(target_selected = "yield_bu_acre", commodity = "corn")
   )
   out <- save_grouped(obj, slug)
   list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
@@ -2903,6 +3204,10 @@ dataset_fns <- list(
   electricity_load = prepare_electricity,
   owid_co2 = prepare_owid_co2,
   world_bank_wdi = prepare_world_bank_wdi,
+  epa_aqs_pm25 = prepare_epa_aqs_pm25,
+  nyc_tlc_yellow_2022 = prepare_nyc_tlc_yellow_2022,
+  king_county_house_sales = prepare_king_county_house_sales,
+  usda_nass_corn_yield = prepare_usda_nass_corn_yield,
   countyplus = prepare_countyplus,
   sarcos_openml = prepare_sarcos_openml,
   school_ilea = prepare_school_ilea,
@@ -3046,6 +3351,51 @@ build_summary_from_processed <- function(processed_root) {
         license_name = "NYC Open Data terms",
         license_link = "https://opendata.cityofnewyork.us/overview/",
         license_notes = "Subject to NYC Open Data terms of use."
+      ))
+    }
+
+    if (dataset_slug == "nyc_tlc_yellow_2022") {
+      return(list(
+        license_status = "open",
+        license_name = "NYC Open Data terms",
+        license_link = "https://data.cityofnewyork.us/Transportation/2022-Yellow-Taxi-Trip-Data/qp3b-zxtp",
+        license_notes = "Published on NYC Open Data portal; subject to NYC Open Data terms of use."
+      ))
+    }
+
+    if (dataset_slug == "epa_aqs_pm25") {
+      return(list(
+        license_status = "open",
+        license_name = "U.S. Government public data (EPA AirData)",
+        license_link = "https://www.epa.gov/outdoor-air-quality-data/download-daily-data",
+        license_notes = "EPA AirData is public U.S. government data; follow EPA citation and use guidance."
+      ))
+    }
+
+    if (dataset_slug == "king_county_house_sales") {
+      return(list(
+        license_status = "open",
+        license_name = "CC0 Public Domain (OpenML metadata)",
+        license_link = "https://www.openml.org/d/42092",
+        license_notes = "OpenML metadata lists licence as CC0 Public Domain for King County house-sales data."
+      ))
+    }
+
+    if (dataset_slug == "openpowerlifting_totalkg") {
+      return(list(
+        license_status = "open",
+        license_name = "Public Domain (project declaration)",
+        license_link = "https://openpowerlifting.gitlab.io/opl-csv/files/openpowerlifting-latest.zip",
+        license_notes = "Archive LICENSE.txt states OpenPowerlifting CSV data is contributed to the public domain."
+      ))
+    }
+
+    if (dataset_slug == "usda_nass_corn_yield") {
+      return(list(
+        license_status = "open",
+        license_name = "USDA NASS public data",
+        license_link = "https://www.nass.usda.gov/datasets",
+        license_notes = "USDA NASS bulk datasets are publicly downloadable; follow USDA/NASS citation guidance."
       ))
     }
 
