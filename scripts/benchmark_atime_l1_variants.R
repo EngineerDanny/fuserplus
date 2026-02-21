@@ -11,7 +11,7 @@ source("R/l1_fusion_dfs_chain.R")
 source("R/l1_fusion_chain_specialized.R")
 
 DEFAULTS <- list(
-  data_mode = "real",  # real | synthetic
+  data_mode = "real", # real | synthetic
   data_rds = "data/processed/world_bank_wdi/grouped_regression.rds",
   min_group_size = 2L,
   seed = 20260206L,
@@ -29,7 +29,7 @@ DEFAULTS <- list(
   conserve_memory = FALSE,
   edge_block = 256L,
   c_flag_old = FALSE,
-  g_structure = "sparse_chain",    # dense | sparse_chain
+  g_structure = "sparse_chain", # dense | sparse_chain
   times = 3L,
   seconds_limit = Inf,
   out_prefix = "atime_l1_variants"
@@ -54,7 +54,9 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 

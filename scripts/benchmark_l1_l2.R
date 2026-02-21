@@ -9,8 +9,8 @@ suppressPackageStartupMessages(library(fuserplus))
 #   Rscript scripts/benchmark_l1_l2.R
 # Optional CLI flags can still override these defaults.
 DEFAULTS <- list(
-  mode = "baseline",                  # baseline | sweep | run
-  method = NULL,                       # used only when mode == "run"
+  mode = "baseline", # baseline | sweep | run
+  method = NULL, # used only when mode == "run"
   output_csv = "benchmark_l1_l2_summary.csv",
   seed = 20260206L,
   k = 6L,
@@ -148,34 +148,37 @@ fit_once <- function(method, data, lambda, gamma, scaling, tol, num_it, c_flag) 
 
   gc(reset = TRUE)
   timed <- system.time({
-    fit <- withCallingHandlers({
-      if (method == "l1") {
-        fusedLassoProximal(
-          X_train, y_train, groups_train,
-          lambda = lambda,
-          gamma = gamma,
-          G = G,
-          tol = tol,
-          num.it = num_it,
-          intercept = FALSE,
-          scaling = scaling,
-          c.flag = c_flag
-        )
-      } else if (method == "l2") {
-        fusedL2DescentGLMNet(
-          X_train, y_train, groups_train,
-          lambda = lambda,
-          G = G,
-          gamma = gamma,
-          scaling = scaling
-        )
-      } else {
-        stop(sprintf("Unknown method: %s", method))
+    fit <- withCallingHandlers(
+      {
+        if (method == "l1") {
+          fusedLassoProximal(
+            X_train, y_train, groups_train,
+            lambda = lambda,
+            gamma = gamma,
+            G = G,
+            tol = tol,
+            num.it = num_it,
+            intercept = FALSE,
+            scaling = scaling,
+            c.flag = c_flag
+          )
+        } else if (method == "l2") {
+          fusedL2DescentGLMNet(
+            X_train, y_train, groups_train,
+            lambda = lambda,
+            G = G,
+            gamma = gamma,
+            scaling = scaling
+          )
+        } else {
+          stop(sprintf("Unknown method: %s", method))
+        }
+      },
+      warning = function(w) {
+        warnings_seen <<- c(warnings_seen, conditionMessage(w))
+        invokeRestart("muffleWarning")
       }
-    }, warning = function(w) {
-      warnings_seen <<- c(warnings_seen, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    })
+    )
   })
 
   yhat_train <- predict_from_beta(fit, X_train, groups_train)

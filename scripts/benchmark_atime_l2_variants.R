@@ -8,7 +8,7 @@ suppressPackageStartupMessages({
 source("R/l2_fusion_new.R")
 
 DEFAULTS <- list(
-  data_mode = "real",  # real | synthetic
+  data_mode = "real", # real | synthetic
   data_rds = "data/processed/world_bank_wdi/grouped_regression.rds",
   min_group_size = 2L,
   seed = 20260206L,
@@ -19,7 +19,7 @@ DEFAULTS <- list(
   lambda = 1e-3,
   gamma = 1e-3,
   scaling = FALSE,
-  g_structure = "sparse_chain",    # dense | sparse_chain
+  g_structure = "sparse_chain", # dense | sparse_chain
   times = 3L,
   seconds_limit = Inf,
   out_prefix = "atime_l2"
@@ -44,7 +44,9 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
@@ -249,17 +251,17 @@ l2_obj <- atime::atime(
   expr.list = setNames(
     list(
       quote(
-      fusedL2DescentGLMNet(
-        X, y, groups,
-        lambda = lambda, gamma = gamma, G = G, scaling = scaling
-      )
-    ),
+        fusedL2DescentGLMNet(
+          X, y, groups,
+          lambda = lambda, gamma = gamma, G = G, scaling = scaling
+        )
+      ),
       quote(
-      fusedL2DescentGLMNetNew(
-        X, y, groups,
-        lambda = lambda, gamma = gamma, G = G, scaling = scaling
+        fusedL2DescentGLMNetNew(
+          X, y, groups,
+          lambda = lambda, gamma = gamma, G = G, scaling = scaling
+        )
       )
-    )
     ),
     c("Legacy Full-Edge", "Active-Edge (Ours)")
   )

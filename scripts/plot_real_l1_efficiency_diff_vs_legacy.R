@@ -9,7 +9,9 @@ args <- commandArgs(trailingOnly = TRUE)
 
 get_arg <- function(flag, default = NULL) {
   i <- match(flag, args)
-  if (is.na(i) || i == length(args)) return(default)
+  if (is.na(i) || i == length(args)) {
+    return(default)
+  }
   args[[i + 1L]]
 }
 
@@ -74,7 +76,9 @@ extract_dataset_slug <- function(path, known_slugs) {
   bn <- basename(path)
   if (length(known_slugs) > 0L) {
     hits <- known_slugs[vapply(known_slugs, function(s) grepl(s, bn, fixed = TRUE), logical(1))]
-    if (length(hits) > 0L) return(hits[[which.max(nchar(hits))]])
+    if (length(hits) > 0L) {
+      return(hits[[which.max(nchar(hits))]])
+    }
   }
   x <- sub("^real_l1_cv_fixed_budget_dense_", "", bn)
   x <- sub("_summary\\.csv$", "", x)
@@ -86,7 +90,9 @@ extract_dataset_slug <- function(path, known_slugs) {
 is_new_settings_file <- function(path) {
   bn <- basename(path)
   # Keep the current naming style and exclude known legacy/experimental tags.
-  if (!grepl("^real_l1_cv_fixed_budget_dense_.*_summary\\.csv$", bn)) return(FALSE)
+  if (!grepl("^real_l1_cv_fixed_budget_dense_.*_summary\\.csv$", bn)) {
+    return(FALSE)
+  }
   legacy_tags <- c(
     "std_intercept_system_time",
     "nomem",

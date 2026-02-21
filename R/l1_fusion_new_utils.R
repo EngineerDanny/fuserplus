@@ -126,7 +126,7 @@ fusedLassoProximalNewLastScreening <- function() {
     delta.lik <- lapply(seq_len(k), function(k.i) {
       g <- group.names[k.i]
       (crossprod(X.list[[k.i]], X.list[[k.i]] %*% B.old[, k.i]) -
-         crossprod(X.list[[k.i]], Y[groups == g])) / samp.sizes[k.i]
+        crossprod(X.list[[k.i]], Y[groups == g])) / samp.sizes[k.i]
     })
   }
 
@@ -203,17 +203,16 @@ fusedLassoProximalNewLastScreening <- function() {
 }
 
 .fusion_operator_term <- function(
-  B.fusion,
-  k,
-  edge.u,
-  edge.v,
-  edge.w,
-  gamma,
-  mu,
-  edge.block,
-  return_stats = FALSE,
-  workspace = NULL
-) {
+    B.fusion,
+    k,
+    edge.u,
+    edge.v,
+    edge.w,
+    gamma,
+    mu,
+    edge.block,
+    return_stats = FALSE,
+    workspace = NULL) {
   if (gamma <= 0 || length(edge.u) == 0) {
     zero <- matrix(0, nrow(B.fusion), k)
     if (!return_stats) {
@@ -304,32 +303,31 @@ fusedLassoProximalNewLastScreening <- function() {
 }
 
 .run_operator_iterations <- function(
-  Y,
-  groups,
-  group.names,
-  XX,
-  XY,
-  X.list,
-  p,
-  k,
-  samp.sizes,
-  lambda,
-  gamma,
-  mu,
-  tol,
-  num.it,
-  lam.max,
-  intercept,
-  penalty.factors,
-  edge.u,
-  edge.v,
-  edge.w,
-  edge.block,
-  state,
-  trace_state = NULL,
-  stage = "operator",
-  prep = NULL
-) {
+    Y,
+    groups,
+    group.names,
+    XX,
+    XY,
+    X.list,
+    p,
+    k,
+    samp.sizes,
+    lambda,
+    gamma,
+    mu,
+    tol,
+    num.it,
+    lam.max,
+    intercept,
+    penalty.factors,
+    edge.u,
+    edge.v,
+    edge.w,
+    edge.block,
+    state,
+    trace_state = NULL,
+    stage = "operator",
+    prep = NULL) {
   max.node.weight <- .max_node_weight(k, edge.u, edge.v, edge.w)
   L_U <- lam.max + (lambda^2 + 2 * gamma^2 * max.node.weight) / mu
   L_U.inv <- 1 / L_U
@@ -476,13 +474,12 @@ fusedLassoProximalNewLastScreening <- function() {
 }
 
 .screen_edges_grad_zero <- function(
-  prep,
-  gamma,
-  intercept,
-  margin = 0,
-  max_drop_frac = 1,
-  min_keep = 0L
-) {
+    prep,
+    gamma,
+    intercept,
+    margin = 0,
+    max_drop_frac = 1,
+    min_keep = 0L) {
   num.edges <- length(prep$edge.u)
   if (gamma <= 0 || num.edges == 0) {
     keep <- rep(TRUE, num.edges)
@@ -533,15 +530,14 @@ fusedLassoProximalNewLastScreening <- function() {
 }
 
 .prepare_l1new_inputs <- function(
-  X,
-  Y,
-  groups,
-  G,
-  intercept,
-  penalty.factors,
-  conserve.memory,
-  scaling
-) {
+    X,
+    Y,
+    groups,
+    G,
+    intercept,
+    penalty.factors,
+    conserve.memory,
+    scaling) {
   group.names <- sort(unique(groups))
   k <- length(group.names)
   p <- ncol(X)
@@ -612,13 +608,12 @@ fusedLassoProximalNewLastScreening <- function() {
 }
 
 .finalize_l1new_fit <- function(
-  fit.raw,
-  prep,
-  lambda,
-  intercept,
-  trace_state = NULL,
-  screening_info = NULL
-) {
+    fit.raw,
+    prep,
+    lambda,
+    intercept,
+    trace_state = NULL,
+    screening_info = NULL) {
   .l1new_env$lastNumIters <- fit.raw$iterations
   .l1new_env$lastActiveEdges <- fit.raw$active_edges
   .l1new_env$lastTrace <- .trace_state_to_df(trace_state)

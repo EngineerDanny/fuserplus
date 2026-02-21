@@ -92,18 +92,21 @@ build_graphs <- function(k, dense_limit = 400L) {
 
 encode_mixed_df <- function(df) {
   out <- lapply(df, function(col) {
-    if (is.numeric(col)) return(col)
-    if (is.logical(col)) return(as.integer(col))
+    if (is.numeric(col)) {
+      return(col)
+    }
+    if (is.logical(col)) {
+      return(as.integer(col))
+    }
     as.integer(factor(col))
   })
   as.data.frame(out, stringsAsFactors = FALSE)
 }
 
 finalize_grouped <- function(
-  df, y_col, group_col, feature_cols, dataset_name, source,
-  min_group_size = 5L, max_rows = 200000L, dense_limit = 400L,
-  extra_meta = list()
-) {
+    df, y_col, group_col, feature_cols, dataset_name, source,
+    min_group_size = 5L, max_rows = 200000L, dense_limit = 400L,
+    extra_meta = list()) {
   keep <- c(y_col, group_col, feature_cols)
   keep <- unique(keep[keep %in% names(df)])
   df <- df[, keep, drop = FALSE]
@@ -209,7 +212,9 @@ save_grouped <- function(obj, slug) {
   utils::write.csv(dat, data_csv, row.names = FALSE)
 
   matrix_to_edge_df <- function(G) {
-    if (is.null(G)) return(data.frame(from = integer(0), to = integer(0), weight = numeric(0)))
+    if (is.null(G)) {
+      return(data.frame(from = integer(0), to = integer(0), weight = numeric(0)))
+    }
     if (inherits(G, "sparseMatrix")) {
       trip <- tryCatch(Matrix::summary(G), error = function(e) NULL)
       if (is.null(trip) || !all(c("i", "j", "x") %in% names(trip)) || nrow(trip) == 0L) {
@@ -276,11 +281,10 @@ save_grouped <- function(obj, slug) {
 }
 
 finalize_grouped_matrix <- function(
-  X, y, group_raw, dataset_name, source,
-  y_col = "y", group_col = "group_raw",
-  min_group_size = 5L, max_rows = 200000L, dense_limit = 400L,
-  extra_meta = list()
-) {
+    X, y, group_raw, dataset_name, source,
+    y_col = "y", group_col = "group_raw",
+    min_group_size = 5L, max_rows = 200000L, dense_limit = 400L,
+    extra_meta = list()) {
   X <- as.matrix(X)
   storage.mode(X) <- "double"
   y <- as.numeric(y)
@@ -427,7 +431,8 @@ prepare_wine_quality <- function() {
   d <- rbind(red, white)
 
   obj <- finalize_grouped(
-    d, y_col = "quality", group_col = "wine_type",
+    d,
+    y_col = "quality", group_col = "wine_type",
     feature_cols = setdiff(names(d), c("quality", "wine_type")),
     dataset_name = "UCI Wine Quality",
     source = "https://archive.ics.uci.edu/dataset/186/wine+quality"
@@ -451,7 +456,8 @@ prepare_student_performance <- function() {
   d <- rbind(mat, por)
 
   obj <- finalize_grouped(
-    d, y_col = "G3", group_col = "subject",
+    d,
+    y_col = "G3", group_col = "subject",
     feature_cols = setdiff(names(d), c("G3", "subject")),
     dataset_name = "UCI Student Performance",
     source = "https://archive.ics.uci.edu/dataset/320/student+performance",
@@ -488,7 +494,8 @@ prepare_beijing_air <- function() {
   feature_cols <- intersect(feature_candidates, nms)
 
   obj <- finalize_grouped(
-    d, y_col = y_col, group_col = group_col, feature_cols = feature_cols,
+    d,
+    y_col = y_col, group_col = group_col, feature_cols = feature_cols,
     dataset_name = "UCI Beijing Multi-Site Air Quality",
     source = "https://archive.ics.uci.edu/dataset/501/beijing+multi+site+air+quality+data",
     max_rows = 180000L
@@ -565,7 +572,8 @@ prepare_electricity <- function() {
   }
 
   obj <- finalize_grouped(
-    long, y_col = "load", group_col = "group_raw",
+    long,
+    y_col = "load", group_col = "group_raw",
     feature_cols = c("lag1", "hour", "wday", "month"),
     dataset_name = "UCI ElectricityLoadDiagrams20112014",
     source = "https://archive.ics.uci.edu/dataset/321/electricityloaddiagrams20112014",
@@ -586,7 +594,8 @@ prepare_owid_co2 <- function() {
   d <- d[complete.cases(d[, c("co2_per_capita", "gdp", "population", "primary_energy_consumption")]), , drop = FALSE]
 
   obj <- finalize_grouped(
-    d, y_col = "co2_per_capita", group_col = "country",
+    d,
+    y_col = "co2_per_capita", group_col = "country",
     feature_cols = c("year", "gdp", "population", "primary_energy_consumption"),
     dataset_name = "OWID CO2",
     source = "https://github.com/owid/co2-data",
@@ -632,7 +641,8 @@ prepare_world_bank_wdi <- function() {
   d <- d[complete.cases(d[, indicators]), , drop = FALSE]
 
   obj <- finalize_grouped(
-    d, y_col = "NY.GDP.PCAP.CD", group_col = "iso3c",
+    d,
+    y_col = "NY.GDP.PCAP.CD", group_col = "iso3c",
     feature_cols = c("year", "SP.POP.TOTL", "NE.EXP.GNFS.CD", "NE.IMP.GNFS.CD"),
     dataset_name = "World Bank WDI",
     source = "https://data.worldbank.org",
@@ -950,7 +960,8 @@ prepare_nyc_tlc <- function() {
   d <- d[complete.cases(d[, c(y_col, feature_cols, group_col)]), , drop = FALSE]
 
   obj <- finalize_grouped(
-    d, y_col = y_col, group_col = group_col, feature_cols = feature_cols,
+    d,
+    y_col = y_col, group_col = group_col, feature_cols = feature_cols,
     dataset_name = "NYC TLC (sample)",
     source = "https://data.cityofnewyork.us",
     min_group_size = 20L,
@@ -997,7 +1008,8 @@ prepare_noaa_ghcn <- function() {
   d$SNOW[is.na(d$SNOW)] <- 0
 
   obj <- finalize_grouped(
-    d, y_col = "TMAX", group_col = "station",
+    d,
+    y_col = "TMAX", group_col = "station",
     feature_cols = c("TMIN", "PRCP", "SNOW", "year", "doy"),
     dataset_name = "NOAA GHCN Daily (sampled stations)",
     source = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/by_station/",
@@ -1014,7 +1026,9 @@ choose_countyplus_target <- function(d, exclude_cols) {
 
   preferred <- c("hpi", "hpi_at_bdl", "unemployment_rate", "poverty_rate", "family_income", "median_income", "consumption")
   for (nm in preferred) {
-    if (nm %in% num_cols) return(nm)
+    if (nm %in% num_cols) {
+      return(nm)
+    }
   }
   # Fallback: choose high-variance numeric column.
   sds <- vapply(d[num_cols], function(x) stats::sd(x, na.rm = TRUE), numeric(1))
@@ -1064,7 +1078,8 @@ prepare_countyplus <- function() {
   }
 
   obj <- finalize_grouped(
-    d, y_col = target_col, group_col = group_col, feature_cols = feat,
+    d,
+    y_col = target_col, group_col = group_col, feature_cols = feat,
     dataset_name = "CountyPlus",
     source = "https://github.com/Clpr/CountyPlus/releases/tag/v0.0.2",
     min_group_size = 3L,
@@ -1091,7 +1106,8 @@ prepare_sarcos_openml <- function() {
   d$group_bin <- cut(d$V1, breaks = stats::quantile(d$V1, probs = seq(0, 1, by = 0.1), na.rm = TRUE), include.lowest = TRUE)
 
   obj <- finalize_grouped(
-    d, y_col = target, group_col = "group_bin", feature_cols = feature_cols,
+    d,
+    y_col = target, group_col = "group_bin", feature_cols = feature_cols,
     dataset_name = "SARCOS (OpenML 43873)",
     source = "https://www.openml.org/d/43873",
     min_group_size = 50L
@@ -1107,7 +1123,8 @@ prepare_school_ilea <- function() {
   d <- merge(MathAchieve, MathAchSchool, by = "School", all.x = TRUE)
 
   obj <- finalize_grouped(
-    d, y_col = "MathAch", group_col = "School",
+    d,
+    y_col = "MathAch", group_col = "School",
     feature_cols = setdiff(names(d), c("MathAch", "School")),
     dataset_name = "School (nlme MathAchieve/MathAchSchool fallback)",
     source = "R package nlme datasets MathAchieve + MathAchSchool",
@@ -1145,13 +1162,16 @@ prepare_nir_corn <- function() {
     stop("NIR Corn dimensions are inconsistent across instruments/targets.")
   }
 
-  wavelengths <- tryCatch({
-    wl <- as.numeric(m$m5spec$axisscale[[2]][[1]][1, ])
-    if (length(wl) != ncol(x_m5)) stop("bad_wl_len")
-    wl
-  }, error = function(e) {
-    seq_len(ncol(x_m5))
-  })
+  wavelengths <- tryCatch(
+    {
+      wl <- as.numeric(m$m5spec$axisscale[[2]][[1]][1, ])
+      if (length(wl) != ncol(x_m5)) stop("bad_wl_len")
+      wl
+    },
+    error = function(e) {
+      seq_len(ncol(x_m5))
+    }
+  )
 
   X <- rbind(x_m5, x_mp5, x_mp6)
   y <- rep(y_base, times = 3L)
@@ -1229,25 +1249,31 @@ prepare_nir_tablets_high_dim <- function() {
   # Use assay target (3rd response column), and calibration+validation only so p > n.
   target_idx <- 3L
   target_name <- "assay"
-  try({
-    y_labels <- trimws(as.character(m[["calibrate.Y"]][["label"]][[2]][[1]][, 1]))
-    if (length(y_labels) >= target_idx && nzchar(y_labels[target_idx])) {
-      target_name <- y_labels[target_idx]
-    }
-  }, silent = TRUE)
+  try(
+    {
+      y_labels <- trimws(as.character(m[["calibrate.Y"]][["label"]][[2]][[1]][, 1]))
+      if (length(y_labels) >= target_idx && nzchar(y_labels[target_idx])) {
+        target_name <- y_labels[target_idx]
+      }
+    },
+    silent = TRUE
+  )
 
   x_1 <- rbind(x_cal_1, x_val_1)
   x_2 <- rbind(x_cal_2, x_val_2)
   y_1 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
   y_2 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
 
-  wavelengths <- tryCatch({
-    wl <- as.numeric(m[["calibrate.1"]][["axisscale"]][[2]][[1]][1, ])
-    if (length(wl) != ncol(x_1)) stop("bad_wl_len")
-    wl
-  }, error = function(e) {
-    seq_len(ncol(x_1))
-  })
+  wavelengths <- tryCatch(
+    {
+      wl <- as.numeric(m[["calibrate.1"]][["axisscale"]][[2]][[1]][1, ])
+      if (length(wl) != ncol(x_1)) stop("bad_wl_len")
+      wl
+    },
+    error = function(e) {
+      seq_len(ncol(x_1))
+    }
+  )
 
   wl_chr <- trimws(format(wavelengths, scientific = FALSE, trim = TRUE))
   feat_names <- paste0("wl_", gsub("[^0-9A-Za-z]+", "_", wl_chr))
@@ -1327,25 +1353,31 @@ prepare_nir_tablets_hardness_high_dim <- function() {
   # Use hardness target (2nd response column), and calibration+validation only so p > n.
   target_idx <- 2L
   target_name <- "hardness"
-  try({
-    y_labels <- trimws(as.character(m[["calibrate.Y"]][["label"]][[2]][[1]][, 1]))
-    if (length(y_labels) >= target_idx && nzchar(y_labels[target_idx])) {
-      target_name <- y_labels[target_idx]
-    }
-  }, silent = TRUE)
+  try(
+    {
+      y_labels <- trimws(as.character(m[["calibrate.Y"]][["label"]][[2]][[1]][, 1]))
+      if (length(y_labels) >= target_idx && nzchar(y_labels[target_idx])) {
+        target_name <- y_labels[target_idx]
+      }
+    },
+    silent = TRUE
+  )
 
   x_1 <- rbind(x_cal_1, x_val_1)
   x_2 <- rbind(x_cal_2, x_val_2)
   y_1 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
   y_2 <- as.numeric(c(y_cal[, target_idx], y_val[, target_idx]))
 
-  wavelengths <- tryCatch({
-    wl <- as.numeric(m[["calibrate.1"]][["axisscale"]][[2]][[1]][1, ])
-    if (length(wl) != ncol(x_1)) stop("bad_wl_len")
-    wl
-  }, error = function(e) {
-    seq_len(ncol(x_1))
-  })
+  wavelengths <- tryCatch(
+    {
+      wl <- as.numeric(m[["calibrate.1"]][["axisscale"]][[2]][[1]][1, ])
+      if (length(wl) != ncol(x_1)) stop("bad_wl_len")
+      wl
+    },
+    error = function(e) {
+      seq_len(ncol(x_1))
+    }
+  )
 
   wl_chr <- trimws(format(wavelengths, scientific = FALSE, trim = TRUE))
   feat_names <- paste0("wl_", gsub("[^0-9A-Za-z]+", "_", wl_chr))
@@ -1905,11 +1937,10 @@ prepare_nci60_cellminer_high_dim <- function() {
 }
 
 prepare_ccle_depmap_gdsc_high_dim_variant <- function(
-  slug,
-  dataset_name,
-  group_priority = c("lineage_first", "primary_first"),
-  fixed_target = NULL
-) {
+    slug,
+    dataset_name,
+    group_priority = c("lineage_first", "primary_first"),
+    fixed_target = NULL) {
   group_priority <- match.arg(group_priority)
   raw_dir <- file.path(raw_root, "ccle_depmap_gdsc_high_dim")
   dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
@@ -2312,18 +2343,24 @@ prepare_abide_connectome_high_dim <- function() {
     local_path <- file.path(ts_dir, paste0(fid, "_rois_cc200.1D"))
     ok <- TRUE
     tryCatch(download_if_missing(ts_url(fid), local_path), error = function(e) ok <<- FALSE)
-    if (!ok || !file.exists(local_path)) return(NULL)
+    if (!ok || !file.exists(local_path)) {
+      return(NULL)
+    }
 
     ts <- tryCatch(
       utils::read.table(local_path, header = TRUE, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE),
       error = function(e) NULL
     )
-    if (is.null(ts) || ncol(ts) < 50L || nrow(ts) < 20L) return(NULL)
+    if (is.null(ts) || ncol(ts) < 50L || nrow(ts) < 20L) {
+      return(NULL)
+    }
     M <- as.matrix(ts)
     storage.mode(M) <- "double"
     keep_var <- apply(M, 2L, function(z) stats::sd(z, na.rm = TRUE) > 0)
     M <- M[, keep_var, drop = FALSE]
-    if (ncol(M) < 150L) return(NULL)
+    if (ncol(M) < 150L) {
+      return(NULL)
+    }
 
     C <- stats::cor(M, use = "pairwise.complete.obs")
     C[!is.finite(C)] <- 0
@@ -2491,18 +2528,17 @@ prepare_gtv_swus_obs_high_dim <- function() {
 }
 
 prepare_csv_grouped_dataset <- function(
-  slug,
-  url,
-  dataset_name,
-  source,
-  y_col,
-  group_col,
-  feature_cols = NULL,
-  drop_cols = c("rownames", "Unnamed: 0"),
-  min_group_size = 3L,
-  max_rows = NULL,
-  extra_meta = list()
-) {
+    slug,
+    url,
+    dataset_name,
+    source,
+    y_col,
+    group_col,
+    feature_cols = NULL,
+    drop_cols = c("rownames", "Unnamed: 0"),
+    min_group_size = 3L,
+    max_rows = NULL,
+    extra_meta = list()) {
   raw_dir <- file.path(raw_root, slug)
   dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
   csv_path <- file.path(raw_dir, "source.csv")
@@ -2781,17 +2817,23 @@ prepare_rdatasets_dietox <- function() {
 }
 
 orcestra_pick_col <- function(cols, candidates) {
-  if (length(cols) == 0L || length(candidates) == 0L) return(NULL)
+  if (length(cols) == 0L || length(candidates) == 0L) {
+    return(NULL)
+  }
   cols_l <- tolower(cols)
   for (cand in candidates) {
     idx <- which(cols_l == tolower(cand))
-    if (length(idx) > 0L) return(cols[idx[1L]])
+    if (length(idx) > 0L) {
+      return(cols[idx[1L]])
+    }
   }
   NULL
 }
 
 orcestra_download_pset_if_missing <- function(pset_name, dest_path) {
-  if (file.exists(dest_path)) return(dest_path)
+  if (file.exists(dest_path)) {
+    return(dest_path)
+  }
   canon <- jsonlite::fromJSON("https://www.orcestra.ca/api/pset/canonical")
   if (!is.data.frame(canon) || !all(c("name", "downloadLink") %in% names(canon))) {
     stop("ORCESTRA canonical API format is unexpected.")
@@ -2805,13 +2847,19 @@ orcestra_download_pset_if_missing <- function(pset_name, dest_path) {
 
 orcestra_pick_feature_block <- function(ps) {
   keys <- names(PharmacoGx::molecularProfilesSlot(ps))
-  if (length(keys) == 0L) return(list(key = NA_character_, p = NA_integer_))
+  if (length(keys) == 0L) {
+    return(list(key = NA_character_, p = NA_integer_))
+  }
 
   get_p <- function(key) {
     fi <- tryCatch(PharmacoGx::featureInfo(ps, mDataType = key), error = function(e) NULL)
-    if (!is.null(fi)) return(as.integer(nrow(fi)))
+    if (!is.null(fi)) {
+      return(as.integer(nrow(fi)))
+    }
     mp <- tryCatch(PharmacoGx::molecularProfiles(ps, mDataType = key), error = function(e) NULL)
-    if (is.null(mp)) return(NA_integer_)
+    if (is.null(mp)) {
+      return(NA_integer_)
+    }
     as.integer(nrow(mp))
   }
 
@@ -2822,7 +2870,9 @@ orcestra_pick_feature_block <- function(ps) {
     if (length(idx) == 0L) next
     key <- keys[idx[1L]]
     p <- get_p(key)
-    if (is.finite(p) && p > 0L) return(list(key = key, p = p))
+    if (is.finite(p) && p > 0L) {
+      return(list(key = key, p = p))
+    }
   }
 
   score <- rep(0, length(keys))
@@ -2835,7 +2885,9 @@ orcestra_pick_feature_block <- function(ps) {
   for (i in ord) {
     key <- keys[i]
     p <- get_p(key)
-    if (is.finite(p) && p > 0L) return(list(key = key, p = p))
+    if (is.finite(p) && p > 0L) {
+      return(list(key = key, p = p))
+    }
   }
 
   key <- keys[ord[1L]]
@@ -2843,7 +2895,9 @@ orcestra_pick_feature_block <- function(ps) {
 }
 
 orcestra_pick_response_measure <- function(measures) {
-  if (length(measures) == 0L) return(NA_character_)
+  if (length(measures) == 0L) {
+    return(NA_character_)
+  }
   preferred <- c(
     "aac_recomputed", "auc_recomputed", "aac_published", "auc_published",
     "ic50_recomputed", "ic50_published", "ec50_recomputed", "ec50_published",
@@ -2852,7 +2906,9 @@ orcestra_pick_response_measure <- function(measures) {
   measures_l <- tolower(measures)
   for (cand in preferred) {
     idx <- which(measures_l == cand)
-    if (length(idx) > 0L) return(as.character(measures[idx[1L]]))
+    if (length(idx) > 0L) {
+      return(as.character(measures[idx[1L]]))
+    }
   }
   as.character(measures[1L])
 }
@@ -2973,12 +3029,11 @@ orcestra_group_vector <- function(ps, sample_ids, preferred_group_col = NULL) {
 }
 
 prepare_orcestra_pset_high_dim <- function(
-  pset_name,
-  slug,
-  dataset_name,
-  doi,
-  preferred_group_col = NULL
-) {
+    pset_name,
+    slug,
+    dataset_name,
+    doi,
+    preferred_group_col = NULL) {
   if (!requireNamespace("PharmacoGx", quietly = TRUE)) {
     stop("ORCESTRA preprocessing requires package 'PharmacoGx'. Install it and rerun.")
   }
@@ -3252,12 +3307,15 @@ for (nm in requested) {
     p_gt_n = NA,
     regime = NA_character_
   )
-  out <- tryCatch({
-    out <- fn()
-    list(ok = TRUE, out = out, msg = "")
-  }, error = function(e) {
-    list(ok = FALSE, out = NULL, msg = conditionMessage(e))
-  })
+  out <- tryCatch(
+    {
+      out <- fn()
+      list(ok = TRUE, out = out, msg = "")
+    },
+    error = function(e) {
+      list(ok = FALSE, out = NULL, msg = conditionMessage(e))
+    }
+  )
   if (isTRUE(out$ok)) {
     row$path <- out$out$path %||% NA_character_
     row$n <- out$out$n %||% NA_integer_

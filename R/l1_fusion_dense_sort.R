@@ -63,12 +63,11 @@
 }
 
 .dense_sort_fusion_operator_term <- function(
-  B.fusion,
-  gamma.eff,
-  mu,
-  return_stats = FALSE,
-  workspace = NULL
-) {
+    B.fusion,
+    gamma.eff,
+    mu,
+    return_stats = FALSE,
+    workspace = NULL) {
   p.use <- nrow(B.fusion)
   k <- ncol(B.fusion)
   use_ws <- !is.null(workspace) &&
@@ -211,17 +210,16 @@
 }
 
 .genFusedLassoProximalDenseSortCore <- function(
-  prep,
-  lambda,
-  gamma,
-  edge.weight,
-  mu,
-  tol,
-  num.it,
-  lam.max,
-  intercept,
-  trace_state = NULL
-) {
+    prep,
+    lambda,
+    gamma,
+    edge.weight,
+    mu,
+    tol,
+    num.it,
+    lam.max,
+    intercept,
+    trace_state = NULL) {
   if (is.null(lam.max)) {
     lam.max <- .compute_lam_max(prep$XX, prep$X.list)
   }
@@ -320,9 +318,9 @@
           gamma.eff = gamma.eff,
           intercept = intercept
         )
-          dual.linear <- sparsity.linear + fusion.out$linear
-          dual.quad <- 0.5 * mu * (sparsity.sq + fusion.out$prox_sq)
-          .append_trace_row(trace_state, list(
+        dual.linear <- sparsity.linear + fusion.out$linear
+        dual.quad <- 0.5 * mu * (sparsity.sq + fusion.out$prox_sq)
+        .append_trace_row(trace_state, list(
           stage = "dense_sort",
           iter_local = i,
           iter_global = trace_state$iter_global,
@@ -330,7 +328,7 @@
           dual_linear = dual.linear,
           dual_quadratic = dual.quad,
           dual_surrogate_reg = dual.linear - dual.quad,
-            dual_feas_inf = max(sparsity.inf, fusion.out$prox_inf, na.rm = TRUE),
+          dual_feas_inf = max(sparsity.inf, fusion.out$prox_inf, na.rm = TRUE),
           update_l1 = improvement,
           kkt_inf = max(abs(delta.f)),
           kkt_fro = sqrt(mean(delta.f^2))
@@ -387,28 +385,27 @@
 #' @return Coefficient matrix (p by k, or (p+1) by k if intercept=TRUE)
 #' @export
 fusedLassoProximalDenseSortScaffold <- function(
-  X,
-  Y,
-  groups,
-  lambda,
-  gamma,
-  G,
-  mu = 1e-04,
-  tol = 1e-06,
-  num.it = 1000,
-  lam.max = NULL,
-  c.flag = FALSE,
-  intercept = TRUE,
-  penalty.factors = NULL,
-  conserve.memory = NULL,
-  scaling = TRUE,
-  edge.block = 256L,
-  diagnostics = FALSE,
-  trace_every = 1L,
-  require_uniform_weights = TRUE,
-  graph_tol = 1e-12,
-  fallback = TRUE
-) {
+    X,
+    Y,
+    groups,
+    lambda,
+    gamma,
+    G,
+    mu = 1e-04,
+    tol = 1e-06,
+    num.it = 1000,
+    lam.max = NULL,
+    c.flag = FALSE,
+    intercept = TRUE,
+    penalty.factors = NULL,
+    conserve.memory = NULL,
+    scaling = TRUE,
+    edge.block = 256L,
+    diagnostics = FALSE,
+    trace_every = 1L,
+    require_uniform_weights = TRUE,
+    graph_tol = 1e-12,
+    fallback = TRUE) {
   .validate_l1new_common(lambda, gamma, mu, edge.block)
   if (c.flag) {
     warning("fusedLassoProximalDenseSortScaffold does not use c.flag; running R implementation.")

@@ -1,16 +1,15 @@
 .genFusedLassoProximalOperatorOnly <- function(
-  prep,
-  lambda,
-  gamma,
-  mu,
-  tol,
-  num.it,
-  lam.max,
-  intercept,
-  edge.block,
-  B_init = NULL,
-  trace_state = NULL
-) {
+    prep,
+    lambda,
+    gamma,
+    mu,
+    tol,
+    num.it,
+    lam.max,
+    intercept,
+    edge.block,
+    B_init = NULL,
+    trace_state = NULL) {
   if (is.null(lam.max)) {
     lam.max <- .compute_lam_max(prep$XX, prep$X.list)
   }
@@ -34,15 +33,15 @@
     lam.max = lam.max,
     intercept = intercept,
     penalty.factors = prep$penalty.factors,
-      edge.u = prep$edge.u,
-      edge.v = prep$edge.v,
-      edge.w = prep$edge.w,
-      edge.block = edge.block,
-      state = init.state,
-      trace_state = trace_state,
-      stage = "operator",
-      prep = prep
-    )
+    edge.u = prep$edge.u,
+    edge.v = prep$edge.v,
+    edge.w = prep$edge.w,
+    edge.block = edge.block,
+    state = init.state,
+    trace_state = trace_state,
+    stage = "operator",
+    prep = prep
+  )
 
   list(
     B = core$B,
@@ -77,26 +76,25 @@
 #' @return Coefficient matrix (p by k, or (p+1) by k if intercept=TRUE)
 #' @export
 fusedLassoProximalNewOperator <- function(
-  X,
-  Y,
-  groups,
-  lambda,
-  gamma,
-  G,
-  mu = 1e-04,
-  tol = 1e-06,
-  num.it = 1000,
-  lam.max = NULL,
-  c.flag = FALSE,
-  intercept = TRUE,
-  penalty.factors = NULL,
-  conserve.memory = NULL,
-  scaling = TRUE,
-  edge.block = 256L,
-  B_init = NULL,
-  diagnostics = FALSE,
-  trace_every = 1L
-) {
+    X,
+    Y,
+    groups,
+    lambda,
+    gamma,
+    G,
+    mu = 1e-04,
+    tol = 1e-06,
+    num.it = 1000,
+    lam.max = NULL,
+    c.flag = FALSE,
+    intercept = TRUE,
+    penalty.factors = NULL,
+    conserve.memory = NULL,
+    scaling = TRUE,
+    edge.block = 256L,
+    B_init = NULL,
+    diagnostics = FALSE,
+    trace_every = 1L) {
   .validate_l1new_common(lambda, gamma, mu, edge.block)
   edge.block <- as.integer(edge.block)
 

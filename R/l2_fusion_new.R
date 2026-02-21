@@ -16,15 +16,14 @@
 #'
 #' @return A list with X, Y, X.fused, penalty, edges, and group.names.
 generateBlockDiagonalMatricesNew <- function(
-  X,
-  Y,
-  groups,
-  G,
-  intercept = FALSE,
-  penalty.factors = rep(1, dim(X)[2]),
-  scaling = FALSE,
-  include.fusion = TRUE
-) {
+    X,
+    Y,
+    groups,
+    G,
+    intercept = FALSE,
+    penalty.factors = rep(1, dim(X)[2]),
+    scaling = FALSE,
+    include.fusion = TRUE) {
   group.names <- sort(unique(groups))
   num.groups <- length(group.names)
 
@@ -148,14 +147,13 @@ generateBlockDiagonalMatricesNew <- function(
 }
 
 .build_l2new_augmented <- function(
-  X,
-  y,
-  groups,
-  G,
-  gamma,
-  intercept = FALSE,
-  scaling = FALSE
-) {
+    X,
+    y,
+    groups,
+    G,
+    gamma,
+    intercept = FALSE,
+    scaling = FALSE) {
   group.names <- sort(unique(groups))
   num.groups <- length(group.names)
 
@@ -325,15 +323,14 @@ generateBlockDiagonalMatricesNew <- function(
 #'
 #' @return Coefficient matrix (p by k).
 fusedL2DescentGLMNetNew <- function(
-  X,
-  y,
-  groups,
-  lambda = NULL,
-  G = NULL,
-  gamma = 1,
-  scaling = FALSE,
-  ...
-) {
+    X,
+    y,
+    groups,
+    lambda = NULL,
+    G = NULL,
+    gamma = 1,
+    scaling = FALSE,
+    ...) {
   if (!is.numeric(gamma) || length(gamma) != 1 || gamma < 0) {
     stop("gamma must be a non-negative scalar.")
   }

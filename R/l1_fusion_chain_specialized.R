@@ -48,17 +48,16 @@
 }
 
 .run_chain_iterations <- function(
-  prep,
-  lambda,
-  gamma,
-  mu,
-  tol,
-  num.it,
-  lam.max,
-  intercept,
-  edge.w,
-  trace_state = NULL
-) {
+    prep,
+    lambda,
+    gamma,
+    mu,
+    tol,
+    num.it,
+    lam.max,
+    intercept,
+    edge.w,
+    trace_state = NULL) {
   if (is.null(lam.max)) {
     lam.max <- .compute_lam_max(prep$XX, prep$X.list)
   }
@@ -213,28 +212,27 @@
 #' @return Coefficient matrix (p by k, or (p+1) by k if intercept=TRUE).
 #' @export
 fusedLassoProximalChainSpecialized <- function(
-  X,
-  Y,
-  groups,
-  lambda,
-  gamma,
-  G,
-  mu = 1e-04,
-  tol = 1e-06,
-  num.it = 1000,
-  lam.max = NULL,
-  c.flag = FALSE,
-  intercept = TRUE,
-  penalty.factors = NULL,
-  conserve.memory = NULL,
-  scaling = TRUE,
-  edge.block = 256L,
-  diagnostics = FALSE,
-  trace_every = 1L,
-  chain.use.mst = TRUE,
-  chain.start = 1L,
-  chain.min.weight = 1e-8
-) {
+    X,
+    Y,
+    groups,
+    lambda,
+    gamma,
+    G,
+    mu = 1e-04,
+    tol = 1e-06,
+    num.it = 1000,
+    lam.max = NULL,
+    c.flag = FALSE,
+    intercept = TRUE,
+    penalty.factors = NULL,
+    conserve.memory = NULL,
+    scaling = TRUE,
+    edge.block = 256L,
+    diagnostics = FALSE,
+    trace_every = 1L,
+    chain.use.mst = TRUE,
+    chain.start = 1L,
+    chain.min.weight = 1e-8) {
   .validate_l1new_common(lambda, gamma, mu, edge.block)
   if (c.flag) {
     warning("fusedLassoProximalChainSpecialized does not use c.flag; running R implementation.")

@@ -50,7 +50,9 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
@@ -107,47 +109,50 @@ fit_one <- function(method, d, budget, cfg) {
   fit <- NULL
   gc(reset = TRUE)
   tm <- system.time({
-    fit <- withCallingHandlers({
-      if (method == "old_l1") {
-        fusedLassoProximal(
-          X = d$X_train,
-          Y = d$y_train,
-          groups = d$groups_train,
-          lambda = cfg$lambda,
-          gamma = cfg$gamma,
-          G = d$G,
-          tol = cfg$tol,
-          num.it = budget,
-          c.flag = FALSE,
-          intercept = cfg$intercept,
-          conserve.memory = cfg$conserve_memory,
-          scaling = cfg$scaling
-        )
-      } else if (method %in% c("operator", "operator_ws", "chain_specialized")) {
-        solver <- method
-        fusedLassoProximalNew(
-          X = d$X_train,
-          Y = d$y_train,
-          groups = d$groups_train,
-          lambda = cfg$lambda,
-          gamma = cfg$gamma,
-          G = d$G,
-          tol = cfg$tol,
-          num.it = budget,
-          c.flag = FALSE,
-          intercept = cfg$intercept,
-          conserve.memory = cfg$conserve_memory,
-          scaling = cfg$scaling,
-          edge.block = cfg$edge_block,
-          solver = solver
-        )
-      } else {
-        stop("Unknown method: ", method)
+    fit <- withCallingHandlers(
+      {
+        if (method == "old_l1") {
+          fusedLassoProximal(
+            X = d$X_train,
+            Y = d$y_train,
+            groups = d$groups_train,
+            lambda = cfg$lambda,
+            gamma = cfg$gamma,
+            G = d$G,
+            tol = cfg$tol,
+            num.it = budget,
+            c.flag = FALSE,
+            intercept = cfg$intercept,
+            conserve.memory = cfg$conserve_memory,
+            scaling = cfg$scaling
+          )
+        } else if (method %in% c("operator", "operator_ws", "chain_specialized")) {
+          solver <- method
+          fusedLassoProximalNew(
+            X = d$X_train,
+            Y = d$y_train,
+            groups = d$groups_train,
+            lambda = cfg$lambda,
+            gamma = cfg$gamma,
+            G = d$G,
+            tol = cfg$tol,
+            num.it = budget,
+            c.flag = FALSE,
+            intercept = cfg$intercept,
+            conserve.memory = cfg$conserve_memory,
+            scaling = cfg$scaling,
+            edge.block = cfg$edge_block,
+            solver = solver
+          )
+        } else {
+          stop("Unknown method: ", method)
+        }
+      },
+      warning = function(w) {
+        warnings_seen <<- c(warnings_seen, conditionMessage(w))
+        invokeRestart("muffleWarning")
       }
-    }, warning = function(w) {
-      warnings_seen <<- c(warnings_seen, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    })
+    )
   })
 
   yhat <- predict_from_beta(fit, d$X_val, d$groups_val)
@@ -225,8 +230,10 @@ d <- list(
   G = G_use
 )
 
-cat(sprintf("Data split: train=%d val=%d p=%d k=%d\n",
-            nrow(d$X_train), nrow(d$X_val), ncol(d$X_train), length(unique(d$groups_train))))
+cat(sprintf(
+  "Data split: train=%d val=%d p=%d k=%d\n",
+  nrow(d$X_train), nrow(d$X_val), ncol(d$X_train), length(unique(d$groups_train))
+))
 cat(sprintf("Methods: %s\n", paste(cfg$methods, collapse = ", ")))
 cat(sprintf("Budgets: %s\n", paste(cfg$budgets, collapse = ", ")))
 

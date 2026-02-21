@@ -37,7 +37,9 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
@@ -50,10 +52,14 @@ as_chr_vec <- function(x) {
 
 parse_first_num <- function(lines, pattern) {
   hit <- grep(pattern, lines, value = TRUE)
-  if (!length(hit)) return(NA_real_)
+  if (!length(hit)) {
+    return(NA_real_)
+  }
   m <- regexec(pattern, hit[1L], perl = TRUE)
   g <- regmatches(hit[1L], m)[[1L]]
-  if (length(g) < 2L) return(NA_real_)
+  if (length(g) < 2L) {
+    return(NA_real_)
+  }
   as.numeric(g[2L])
 }
 

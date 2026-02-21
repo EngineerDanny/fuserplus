@@ -10,8 +10,8 @@ source("R/l1_fusion_new.R")
 # User defaults (edit here)
 # -----------------------------
 DEFAULTS <- list(
-  mode = "baseline",                      # baseline | run
-  variant = NULL,                         # used only when mode == "run": operator | operator_ws
+  mode = "baseline", # baseline | run
+  variant = NULL, # used only when mode == "run": operator | operator_ws
   output_csv = "benchmark_l1_operator_ws_summary.csv",
   seed = 20260206L,
   k = 120L,
@@ -28,7 +28,7 @@ DEFAULTS <- list(
   conserve_memory = FALSE,
   edge_block = 256L,
   reps = 1L,
-  g_structure = "dense",                  # dense | sparse_chain
+  g_structure = "dense", # dense | sparse_chain
   ws_init_edges = 256L,
   ws_add_edges = 10000L,
   ws_max_outer = 2L,
@@ -36,7 +36,7 @@ DEFAULTS <- list(
   ws_violation_tol = 1e-8,
   ws_final_full = TRUE,
   ws_final_it = 1200L,
-  screening = "none",                   # none | grad_zero
+  screening = "none", # none | grad_zero
   screen_margin = 0,
   screen_max_drop_frac = 1,
   screen_min_keep = 0L
@@ -61,13 +61,19 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
 as_opt_int <- function(x) {
-  if (is.null(x)) return(NULL)
-  if (tolower(x) %in% c("null", "na")) return(NULL)
+  if (is.null(x)) {
+    return(NULL)
+  }
+  if (tolower(x) %in% c("null", "na")) {
+    return(NULL)
+  }
   as.integer(x)
 }
 
@@ -140,43 +146,45 @@ generate_data <- function(seed, k, p, n_group_train, n_group_test, sigma, g_stru
 }
 
 fit_once <- function(
-  variant, data, lambda, gamma, tol, num_it, scaling, intercept, conserve_memory, edge_block,
-  ws_init_edges, ws_add_edges, ws_max_outer, ws_inner_it, ws_violation_tol, ws_final_full, ws_final_it,
-  screening, screen_margin, screen_max_drop_frac, screen_min_keep
-) {
+    variant, data, lambda, gamma, tol, num_it, scaling, intercept, conserve_memory, edge_block,
+    ws_init_edges, ws_add_edges, ws_max_outer, ws_inner_it, ws_violation_tol, ws_final_full, ws_final_it,
+    screening, screen_margin, screen_max_drop_frac, screen_min_keep) {
   warnings_seen <- character(0)
   fit <- NULL
 
   gc(reset = TRUE)
   t <- system.time({
-    fit <- withCallingHandlers({
-      if (variant == "operator") {
-        fusedLassoProximalNewOperator(
-          data$X_train, data$y_train, data$groups_train,
-          lambda = lambda, gamma = gamma, G = data$G,
-          tol = tol, num.it = num_it, intercept = intercept, scaling = scaling,
-          conserve.memory = conserve_memory, edge.block = edge_block,
-          c.flag = FALSE
-        )
-      } else if (variant == "operator_ws") {
-        fusedLassoProximalNewWorkingSet(
-          data$X_train, data$y_train, data$groups_train,
-          lambda = lambda, gamma = gamma, G = data$G,
-          tol = tol, num.it = num_it, intercept = intercept, scaling = scaling,
-          conserve.memory = conserve_memory, edge.block = edge_block,
-          ws_init_edges = ws_init_edges, ws_add_edges = ws_add_edges,
-          ws_max_outer = ws_max_outer, ws_inner_it = ws_inner_it,
-          ws_violation_tol = ws_violation_tol, ws_final_full = ws_final_full, ws_final_it = ws_final_it,
-          screening = screening, screen_margin = screen_margin,
-          screen_max_drop_frac = screen_max_drop_frac, screen_min_keep = screen_min_keep
-        )
-      } else {
-        stop("Unknown variant: ", variant)
+    fit <- withCallingHandlers(
+      {
+        if (variant == "operator") {
+          fusedLassoProximalNewOperator(
+            data$X_train, data$y_train, data$groups_train,
+            lambda = lambda, gamma = gamma, G = data$G,
+            tol = tol, num.it = num_it, intercept = intercept, scaling = scaling,
+            conserve.memory = conserve_memory, edge.block = edge_block,
+            c.flag = FALSE
+          )
+        } else if (variant == "operator_ws") {
+          fusedLassoProximalNewWorkingSet(
+            data$X_train, data$y_train, data$groups_train,
+            lambda = lambda, gamma = gamma, G = data$G,
+            tol = tol, num.it = num_it, intercept = intercept, scaling = scaling,
+            conserve.memory = conserve_memory, edge.block = edge_block,
+            ws_init_edges = ws_init_edges, ws_add_edges = ws_add_edges,
+            ws_max_outer = ws_max_outer, ws_inner_it = ws_inner_it,
+            ws_violation_tol = ws_violation_tol, ws_final_full = ws_final_full, ws_final_it = ws_final_it,
+            screening = screening, screen_margin = screen_margin,
+            screen_max_drop_frac = screen_max_drop_frac, screen_min_keep = screen_min_keep
+          )
+        } else {
+          stop("Unknown variant: ", variant)
+        }
+      },
+      warning = function(w) {
+        warnings_seen <<- c(warnings_seen, conditionMessage(w))
+        invokeRestart("muffleWarning")
       }
-    }, warning = function(w) {
-      warnings_seen <<- c(warnings_seen, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    })
+    )
   })
 
   yhat_train <- predict_from_beta(fit, data$X_train, data$groups_train)
@@ -227,7 +235,9 @@ argv <- parse_args(commandArgs(trailingOnly = TRUE))
 get_arg <- function(x, key) if (key %in% names(x)) x[[key]] else NULL
 get_opt <- function(key) {
   cli <- get_arg(argv, key)
-  if (!is.null(cli)) return(cli)
+  if (!is.null(cli)) {
+    return(cli)
+  }
   DEFAULTS[[key]]
 }
 

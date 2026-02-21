@@ -158,28 +158,27 @@
 #' @return Coefficient matrix from operator solver on DFS-chain approximation.
 #' @export
 fusedLassoProximalDFSChainApprox <- function(
-  X,
-  Y,
-  groups,
-  lambda,
-  gamma,
-  G,
-  mu = 1e-04,
-  tol = 1e-06,
-  num.it = 1000,
-  lam.max = NULL,
-  c.flag = FALSE,
-  intercept = TRUE,
-  penalty.factors = NULL,
-  conserve.memory = NULL,
-  scaling = TRUE,
-  edge.block = 256L,
-  diagnostics = FALSE,
-  trace_every = 1L,
-  chain.use.mst = TRUE,
-  chain.start = 1L,
-  chain.min.weight = 1e-8
-) {
+    X,
+    Y,
+    groups,
+    lambda,
+    gamma,
+    G,
+    mu = 1e-04,
+    tol = 1e-06,
+    num.it = 1000,
+    lam.max = NULL,
+    c.flag = FALSE,
+    intercept = TRUE,
+    penalty.factors = NULL,
+    conserve.memory = NULL,
+    scaling = TRUE,
+    edge.block = 256L,
+    diagnostics = FALSE,
+    trace_every = 1L,
+    chain.use.mst = TRUE,
+    chain.start = 1L,
+    chain.min.weight = 1e-8) {
   if (c.flag) {
     warning("fusedLassoProximalDFSChainApprox does not use c.flag; running R implementation.")
   }

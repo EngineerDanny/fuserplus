@@ -65,7 +65,9 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(as.character(x)) %in% c("true", "t", "1", "yes", "y")
 }
 
@@ -231,8 +233,7 @@ fit_l1 <- function(method, d, cfg) {
     ))
   }
 
-  solver <- switch(
-    method,
+  solver <- switch(method,
     operator = "operator",
     dense_sort = "dense_sort",
     chain_approx = "chain_specialized",
@@ -262,8 +263,7 @@ fit_one <- function(method, d, cfg) {
   run_method_timed_worker(method = method, d = d, cfg = cfg)
 }
 method_label <- function(method) {
-  switch(
-    method,
+  switch(method,
     legacy_full_edge = "Legacy Full-Edge",
     operator = "Operator (Ours)",
     dense_sort = "Dense Sort (Ours)",
@@ -289,20 +289,30 @@ worker_cfg_from_parent <- function(cfg) {
 }
 
 parse_time_l_elapsed_sec <- function(lines) {
-  if (!length(lines)) return(NA_real_)
+  if (!length(lines)) {
+    return(NA_real_)
+  }
   cand <- grep("\\breal\\b", lines, value = TRUE)
-  if (!length(cand)) return(NA_real_)
+  if (!length(cand)) {
+    return(NA_real_)
+  }
   for (ln in cand) {
     val <- suppressWarnings(as.numeric(sub("^\\s*([0-9]*\\.?[0-9]+)\\s+real.*$", "\\1", ln)))
-    if (is.finite(val)) return(val)
+    if (is.finite(val)) {
+      return(val)
+    }
   }
   NA_real_
 }
 
 parse_time_l_peak_rss_mb <- function(lines) {
-  if (!length(lines)) return(NA_real_)
+  if (!length(lines)) {
+    return(NA_real_)
+  }
   cand <- grep("maximum resident set size", lines, ignore.case = TRUE, value = TRUE)
-  if (!length(cand)) return(NA_real_)
+  if (!length(cand)) {
+    return(NA_real_)
+  }
 
   for (ln in rev(cand)) {
     if (grepl(":", ln, fixed = TRUE)) {
@@ -398,39 +408,42 @@ run_fit_worker <- function(argv) {
   ok <- TRUE
   err <- ""
 
-  tryCatch({
-    test_rmse_val <- NA_real_
-    if (method == "featureless") {
-      ybar <- mean(d$y_train)
-      test_rmse_val <- rmse(d$y_test, rep(ybar, length(d$y_test)))
-    } else {
-      fit <- withCallingHandlers(
-        {
-          fit_l1(method, d, cfg)
-        },
-        warning = function(w) {
-          warning_msg <<- conditionMessage(w)
-          invokeRestart("muffleWarning")
+  tryCatch(
+    {
+      test_rmse_val <- NA_real_
+      if (method == "featureless") {
+        ybar <- mean(d$y_train)
+        test_rmse_val <- rmse(d$y_test, rep(ybar, length(d$y_test)))
+      } else {
+        fit <- withCallingHandlers(
+          {
+            fit_l1(method, d, cfg)
+          },
+          warning = function(w) {
+            warning_msg <<- conditionMessage(w)
+            invokeRestart("muffleWarning")
+          }
+        )
+        if (is.null(fit)) {
+          stop("Fit failed to return coefficients for method: ", method)
         }
-      )
-      if (is.null(fit)) {
-        stop("Fit failed to return coefficients for method: ", method)
+        yhat <- predict_from_beta(fit, d$X_test, d$groups_test)
+        test_rmse_val <- rmse(d$y_test, yhat)
       }
-      yhat <- predict_from_beta(fit, d$X_test, d$groups_test)
-      test_rmse_val <- rmse(d$y_test, yhat)
+      out <- list(
+        ok = TRUE,
+        method = method,
+        test_rmse = test_rmse_val,
+        warning = warning_msg
+      )
+      saveRDS(out, out_path)
+    },
+    error = function(e) {
+      ok <<- FALSE
+      err <<- conditionMessage(e)
+      saveRDS(list(ok = FALSE, method = method, error = err), out_path)
     }
-    out <- list(
-      ok = TRUE,
-      method = method,
-      test_rmse = test_rmse_val,
-      warning = warning_msg
-    )
-    saveRDS(out, out_path)
-  }, error = function(e) {
-    ok <<- FALSE
-    err <<- conditionMessage(e)
-    saveRDS(list(ok = FALSE, method = method, error = err), out_path)
-  })
+  )
 
   if (!ok) {
     stop("Worker failed: ", err)
@@ -603,7 +616,9 @@ warn_text <- aggregate(
   data = raw_df,
   FUN = function(x) {
     vals <- unique(x[x != "none"])
-    if (!length(vals)) return("none")
+    if (!length(vals)) {
+      return("none")
+    }
     paste(vals, collapse = " | ")
   }
 )

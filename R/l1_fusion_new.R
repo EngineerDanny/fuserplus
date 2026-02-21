@@ -32,27 +32,26 @@
 #' @return Coefficient matrix.
 #' @export
 fusedLassoProximalNew <- function(
-  ...,
-  solver = NULL,
-  working_set = FALSE,
-  ws_init_edges = 256L,
-  ws_add_edges = 256L,
-  ws_max_outer = 8L,
-  ws_inner_it = NULL,
-  ws_violation_tol = 1e-06,
-  ws_final_full = TRUE,
-  ws_final_it = NULL,
-  screening = c("none", "grad_zero"),
-  screen_margin = 0,
-  screen_max_drop_frac = 1,
-  screen_min_keep = 0L,
-  chain.use.mst = TRUE,
-  chain.start = 1L,
-  chain.min.weight = 1e-8,
-  require_uniform_weights = TRUE,
-  graph_tol = 1e-12,
-  fallback = TRUE
-) {
+    ...,
+    solver = NULL,
+    working_set = FALSE,
+    ws_init_edges = 256L,
+    ws_add_edges = 256L,
+    ws_max_outer = 8L,
+    ws_inner_it = NULL,
+    ws_violation_tol = 1e-06,
+    ws_final_full = TRUE,
+    ws_final_it = NULL,
+    screening = c("none", "grad_zero"),
+    screen_margin = 0,
+    screen_max_drop_frac = 1,
+    screen_min_keep = 0L,
+    chain.use.mst = TRUE,
+    chain.start = 1L,
+    chain.min.weight = 1e-8,
+    require_uniform_weights = TRUE,
+    graph_tol = 1e-12,
+    fallback = TRUE) {
   if (!is.logical(working_set) || length(working_set) != 1L) {
     stop("Parameter 'working_set' must be TRUE/FALSE.")
   }

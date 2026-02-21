@@ -1,26 +1,25 @@
 .genFusedLassoProximalOperatorWS <- function(
-  prep,
-  lambda,
-  gamma,
-  mu,
-  tol,
-  num.it,
-  lam.max,
-  intercept,
-  edge.block,
-  ws_init_edges,
-  ws_add_edges,
-  ws_max_outer,
-  ws_inner_it,
-  ws_violation_tol,
-  ws_final_full,
-  ws_final_it,
-  screening,
-  screen_margin,
-  screen_max_drop_frac,
-  screen_min_keep,
-  trace_state = NULL
-) {
+    prep,
+    lambda,
+    gamma,
+    mu,
+    tol,
+    num.it,
+    lam.max,
+    intercept,
+    edge.block,
+    ws_init_edges,
+    ws_add_edges,
+    ws_max_outer,
+    ws_inner_it,
+    ws_violation_tol,
+    ws_final_full,
+    ws_final_it,
+    screening,
+    screen_margin,
+    screen_max_drop_frac,
+    screen_min_keep,
+    trace_state = NULL) {
   if (is.null(lam.max)) {
     lam.max <- .compute_lam_max(prep$XX, prep$X.list)
   }
@@ -235,49 +234,48 @@
 #' @return Coefficient matrix (p by k, or (p+1) by k if intercept=TRUE)
 #' @export
 fusedLassoProximalNewWorkingSet <- function(
-  X,
-  Y,
-  groups,
-  lambda,
-  gamma,
-  G,
-  mu = 1e-04,
-  tol = 1e-06,
-  num.it = 1000,
-  lam.max = NULL,
-  c.flag = FALSE,
-  intercept = TRUE,
-  penalty.factors = NULL,
-  conserve.memory = NULL,
-  scaling = TRUE,
-  edge.block = 256L,
-  ws_init_edges = 256L,
-  ws_add_edges = 256L,
-  ws_max_outer = 8L,
-  ws_inner_it = NULL,
-  ws_violation_tol = 1e-06,
-  ws_final_full = TRUE,
-  ws_final_it = NULL,
-  screening = c("none", "grad_zero"),
-  screen_margin = 0,
-  screen_max_drop_frac = 1,
-  screen_min_keep = 0L,
-  diagnostics = FALSE,
-  trace_every = 1L
-) {
+    X,
+    Y,
+    groups,
+    lambda,
+    gamma,
+    G,
+    mu = 1e-04,
+    tol = 1e-06,
+    num.it = 1000,
+    lam.max = NULL,
+    c.flag = FALSE,
+    intercept = TRUE,
+    penalty.factors = NULL,
+    conserve.memory = NULL,
+    scaling = TRUE,
+    edge.block = 256L,
+    ws_init_edges = 256L,
+    ws_add_edges = 256L,
+    ws_max_outer = 8L,
+    ws_inner_it = NULL,
+    ws_violation_tol = 1e-06,
+    ws_final_full = TRUE,
+    ws_final_it = NULL,
+    screening = c("none", "grad_zero"),
+    screen_margin = 0,
+    screen_max_drop_frac = 1,
+    screen_min_keep = 0L,
+    diagnostics = FALSE,
+    trace_every = 1L) {
   .validate_l1new_common(lambda, gamma, mu, edge.block)
   edge.block <- as.integer(edge.block)
   screening <- match.arg(screening)
   if (!is.numeric(screen_margin) || length(screen_margin) != 1L || is.na(screen_margin) ||
-      screen_margin < 0 || screen_margin > 1) {
+    screen_margin < 0 || screen_margin > 1) {
     stop("Parameter 'screen_margin' must be a scalar in [0, 1].")
   }
   if (!is.numeric(screen_max_drop_frac) || length(screen_max_drop_frac) != 1L ||
-      is.na(screen_max_drop_frac) || screen_max_drop_frac < 0 || screen_max_drop_frac > 1) {
+    is.na(screen_max_drop_frac) || screen_max_drop_frac < 0 || screen_max_drop_frac > 1) {
     stop("Parameter 'screen_max_drop_frac' must be a scalar in [0, 1].")
   }
   if (!is.numeric(screen_min_keep) || length(screen_min_keep) != 1L ||
-      is.na(screen_min_keep) || screen_min_keep < 0) {
+    is.na(screen_min_keep) || screen_min_keep < 0) {
     stop("Parameter 'screen_min_keep' must be a non-negative integer.")
   }
   screen_min_keep <- as.integer(screen_min_keep)

@@ -7,8 +7,8 @@ source("R/l2_fusion_new.R")
 # User defaults (edit here)
 # -----------------------------
 DEFAULTS <- list(
-  mode = "baseline",                     # baseline | run
-  variant = NULL,                        # used only when mode == "run": old | new
+  mode = "baseline", # baseline | run
+  variant = NULL, # used only when mode == "run": old | new
   output_csv = "benchmark_l2_old_new_summary.csv",
   seed = 20260206L,
   k = 40L,
@@ -20,7 +20,7 @@ DEFAULTS <- list(
   gamma = 1e-3,
   scaling = FALSE,
   reps = 1L,
-  g_structure = "sparse_chain"           # sparse_chain | dense
+  g_structure = "sparse_chain" # sparse_chain | dense
 )
 
 parse_args <- function(argv) {
@@ -42,7 +42,9 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
@@ -120,24 +122,27 @@ fit_once <- function(variant, data, lambda, gamma, scaling) {
 
   gc(reset = TRUE)
   t <- system.time({
-    fit <- withCallingHandlers({
-      if (variant == "old") {
-        fuserplus::fusedL2DescentGLMNet(
-          data$X_train, data$y_train, data$groups_train,
-          lambda = lambda, G = data$G, gamma = gamma, scaling = scaling
-        )
-      } else if (variant == "new") {
-        fusedL2DescentGLMNetNew(
-          data$X_train, data$y_train, data$groups_train,
-          lambda = lambda, G = data$G, gamma = gamma, scaling = scaling
-        )
-      } else {
-        stop("Unknown variant: ", variant)
+    fit <- withCallingHandlers(
+      {
+        if (variant == "old") {
+          fuserplus::fusedL2DescentGLMNet(
+            data$X_train, data$y_train, data$groups_train,
+            lambda = lambda, G = data$G, gamma = gamma, scaling = scaling
+          )
+        } else if (variant == "new") {
+          fusedL2DescentGLMNetNew(
+            data$X_train, data$y_train, data$groups_train,
+            lambda = lambda, G = data$G, gamma = gamma, scaling = scaling
+          )
+        } else {
+          stop("Unknown variant: ", variant)
+        }
+      },
+      warning = function(w) {
+        warnings_seen <<- c(warnings_seen, conditionMessage(w))
+        invokeRestart("muffleWarning")
       }
-    }, warning = function(w) {
-      warnings_seen <<- c(warnings_seen, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    })
+    )
   })
 
   yhat_train <- predict_from_beta(fit, data$X_train, data$groups_train)
@@ -210,7 +215,9 @@ argv <- parse_args(commandArgs(trailingOnly = TRUE))
 get_arg <- function(x, key) if (key %in% names(x)) x[[key]] else NULL
 get_opt <- function(key) {
   cli <- get_arg(argv, key)
-  if (!is.null(cli)) return(cli)
+  if (!is.null(cli)) {
+    return(cli)
+  }
   DEFAULTS[[key]]
 }
 

@@ -10,10 +10,10 @@ source("R/l1_fusion_chain_specialized.R")
 source("R/l1_fusion_new.R")
 
 DEFAULTS <- list(
-  mode = "sweep",                          # sweep | run
-  method = NULL,                           # required in mode=run
+  mode = "sweep", # sweep | run
+  method = NULL, # required in mode=run
   methods = "old_l1,operator,dense_sort_scaffold,dfs_chain,chain_specialized",
-  k = NULL,                                # required in mode=run
+  k = NULL, # required in mode=run
   k_values = "40,80,120,160",
   reps = 2L,
   seed = 20260214L,
@@ -30,7 +30,7 @@ DEFAULTS <- list(
   conserve_memory = FALSE,
   c_flag_old = FALSE,
   c_flag_new = FALSE,
-  graph_mode = "dense_uniform",            # dense_uniform | dense_nonuniform | sparse
+  graph_mode = "dense_uniform", # dense_uniform | dense_nonuniform | sparse
   g_offdiag = 1.0,
   g_diag = 1.0,
   weight_min = 0.2,
@@ -42,7 +42,7 @@ DEFAULTS <- list(
   chain_use_mst = TRUE,
   chain_start = 1L,
   chain_min_weight = 1e-8,
-  data_model = "shared_plus_group_noise",  # shared_plus_group_noise | sparse_mixed
+  data_model = "shared_plus_group_noise", # shared_plus_group_noise | sparse_mixed
   beta_base_sd = 0.04,
   beta_group_sd = 0.006,
   sparse_shared_prob = 0.02,
@@ -75,12 +75,16 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
 as_num_vec <- function(x) {
-  if (is.null(x) || nchar(x) == 0L) return(numeric(0))
+  if (is.null(x) || nchar(x) == 0L) {
+    return(numeric(0))
+  }
   parts <- trimws(strsplit(x, ",", fixed = TRUE)[[1L]])
   parts <- parts[nzchar(parts)]
   vals <- suppressWarnings(as.numeric(parts))
@@ -91,7 +95,9 @@ as_num_vec <- function(x) {
 }
 
 as_chr_vec <- function(x) {
-  if (is.null(x) || nchar(x) == 0L) return(character(0))
+  if (is.null(x) || nchar(x) == 0L) {
+    return(character(0))
+  }
   parts <- trimws(strsplit(x, ",", fixed = TRUE)[[1L]])
   parts[nzchar(parts)]
 }
@@ -221,57 +227,59 @@ fit_once <- function(method, d, cfg) {
   fit <- NULL
   gc(reset = TRUE)
   t <- system.time({
-    fit <- withCallingHandlers({
-      if (method == "old_l1") {
-        fusedLassoProximal(
-          X = d$X_train,
-          Y = d$y_train,
-          groups = d$groups_train,
-          lambda = cfg$lambda,
-          gamma = cfg$gamma,
-          G = d$G,
-          tol = cfg$tol,
-          num.it = cfg$num_it,
-          c.flag = cfg$c_flag_old,
-          intercept = cfg$intercept,
-          conserve.memory = cfg$conserve_memory,
-          scaling = cfg$scaling
-        )
-      } else if (method %in% c("operator", "dense_sort_scaffold", "dfs_chain", "chain_specialized")) {
-        solver <- switch(
-          method,
-          operator = "operator",
-          dense_sort_scaffold = "dense_sort",
-          dfs_chain = "dfs_chain",
-          chain_specialized = "chain_specialized"
-        )
-        fusedLassoProximalNew(
-          X = d$X_train,
-          Y = d$y_train,
-          groups = d$groups_train,
-          lambda = cfg$lambda,
-          gamma = cfg$gamma,
-          G = d$G,
-          tol = cfg$tol,
-          num.it = cfg$num_it,
-          c.flag = cfg$c_flag_new,
-          intercept = cfg$intercept,
-          conserve.memory = cfg$conserve_memory,
-          scaling = cfg$scaling,
-          solver = solver,
-          chain.use.mst = cfg$chain_use_mst,
-          chain.start = cfg$chain_start,
-          chain.min.weight = cfg$chain_min_weight,
-          require_uniform_weights = cfg$require_uniform_weights,
-          fallback = cfg$fallback_dense
-        )
-      } else {
-        stop("Unknown method: ", method)
+    fit <- withCallingHandlers(
+      {
+        if (method == "old_l1") {
+          fusedLassoProximal(
+            X = d$X_train,
+            Y = d$y_train,
+            groups = d$groups_train,
+            lambda = cfg$lambda,
+            gamma = cfg$gamma,
+            G = d$G,
+            tol = cfg$tol,
+            num.it = cfg$num_it,
+            c.flag = cfg$c_flag_old,
+            intercept = cfg$intercept,
+            conserve.memory = cfg$conserve_memory,
+            scaling = cfg$scaling
+          )
+        } else if (method %in% c("operator", "dense_sort_scaffold", "dfs_chain", "chain_specialized")) {
+          solver <- switch(method,
+            operator = "operator",
+            dense_sort_scaffold = "dense_sort",
+            dfs_chain = "dfs_chain",
+            chain_specialized = "chain_specialized"
+          )
+          fusedLassoProximalNew(
+            X = d$X_train,
+            Y = d$y_train,
+            groups = d$groups_train,
+            lambda = cfg$lambda,
+            gamma = cfg$gamma,
+            G = d$G,
+            tol = cfg$tol,
+            num.it = cfg$num_it,
+            c.flag = cfg$c_flag_new,
+            intercept = cfg$intercept,
+            conserve.memory = cfg$conserve_memory,
+            scaling = cfg$scaling,
+            solver = solver,
+            chain.use.mst = cfg$chain_use_mst,
+            chain.start = cfg$chain_start,
+            chain.min.weight = cfg$chain_min_weight,
+            require_uniform_weights = cfg$require_uniform_weights,
+            fallback = cfg$fallback_dense
+          )
+        } else {
+          stop("Unknown method: ", method)
+        }
+      },
+      warning = function(w) {
+        warnings_seen <<- c(warnings_seen, conditionMessage(w))
+        invokeRestart("muffleWarning")
       }
-    }, warning = function(w) {
-      warnings_seen <<- c(warnings_seen, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    })
+    )
   })
 
   iter <- NA_integer_
@@ -331,24 +339,32 @@ print_spec <- function(cfg, methods, k_vals) {
   if (cfg$graph_mode == "dense_uniform") {
     cat(sprintf("  G mode=dense_uniform: offdiag=%.6f, diag=%.6f\n", cfg$g_offdiag, cfg$g_diag))
   } else if (cfg$graph_mode == "dense_nonuniform") {
-    cat(sprintf("  G mode=dense_nonuniform: weights~U(%.3f, %.3f), diag=%.6f\n",
-                cfg$weight_min, cfg$weight_max, cfg$g_diag))
+    cat(sprintf(
+      "  G mode=dense_nonuniform: weights~U(%.3f, %.3f), diag=%.6f\n",
+      cfg$weight_min, cfg$weight_max, cfg$g_diag
+    ))
   } else if (cfg$graph_mode == "sparse") {
-    cat(sprintf("  G mode=sparse: edge_prob=%.3f, weights~U(%.3f, %.3f), ensure_chain=%s, diag=%.6f\n",
-                cfg$sparse_prob, cfg$weight_min, cfg$weight_max,
-                ifelse(cfg$sparse_ensure_chain, "TRUE", "FALSE"), cfg$g_diag))
+    cat(sprintf(
+      "  G mode=sparse: edge_prob=%.3f, weights~U(%.3f, %.3f), ensure_chain=%s, diag=%.6f\n",
+      cfg$sparse_prob, cfg$weight_min, cfg$weight_max,
+      ifelse(cfg$sparse_ensure_chain, "TRUE", "FALSE"), cfg$g_diag
+    ))
   }
   cat(sprintf("  methods=%s\n", paste(methods, collapse = ",")))
   cat(sprintf("  k_values=%s\n", paste(k_vals, collapse = ",")))
-  cat(sprintf("  p=%d, n_group_train=%d, n_group_test=%d, reps=%d\n\n",
-              cfg$p, cfg$n_group_train, cfg$n_group_test, cfg$reps))
+  cat(sprintf(
+    "  p=%d, n_group_train=%d, n_group_test=%d, reps=%d\n\n",
+    cfg$p, cfg$n_group_train, cfg$n_group_test, cfg$reps
+  ))
 }
 
 argv <- parse_args(commandArgs(trailingOnly = TRUE))
 get_arg <- function(x, key) if (key %in% names(x)) x[[key]] else NULL
 get_opt <- function(key) {
   cli <- get_arg(argv, key)
-  if (!is.null(cli)) return(cli)
+  if (!is.null(cli)) {
+    return(cli)
+  }
   DEFAULTS[[key]]
 }
 

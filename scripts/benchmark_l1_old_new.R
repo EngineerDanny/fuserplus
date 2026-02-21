@@ -10,8 +10,8 @@ source("R/l1_fusion_new.R")
 # User defaults (edit here)
 # -----------------------------
 DEFAULTS <- list(
-  mode = "baseline",                    # baseline | run
-  variant = NULL,                        # used only when mode == "run": old | new
+  mode = "baseline", # baseline | run
+  variant = NULL, # used only when mode == "run": old | new
   output_csv = "benchmark_l1_old_new_summary.csv",
   seed = 20260206L,
   k = 20L,
@@ -29,7 +29,7 @@ DEFAULTS <- list(
   c_flag_old = FALSE,
   edge_block = 256L,
   reps = 1L,
-  g_structure = "dense"                 # dense | sparse_chain
+  g_structure = "dense" # dense | sparse_chain
 )
 
 parse_args <- function(argv) {
@@ -51,7 +51,9 @@ parse_args <- function(argv) {
 }
 
 as_bool <- function(x, default = FALSE) {
-  if (is.null(x)) return(default)
+  if (is.null(x)) {
+    return(default)
+  }
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
@@ -124,49 +126,51 @@ generate_data <- function(seed, k, p, n_group_train, n_group_test, sigma, g_stru
 }
 
 fit_once <- function(
-  variant,
-  data,
-  lambda,
-  gamma,
-  tol,
-  num_it,
-  scaling,
-  intercept,
-  conserve_memory,
-  c_flag_old,
-  edge_block
-) {
+    variant,
+    data,
+    lambda,
+    gamma,
+    tol,
+    num_it,
+    scaling,
+    intercept,
+    conserve_memory,
+    c_flag_old,
+    edge_block) {
   warnings_seen <- character(0)
   fit <- NULL
 
   gc(reset = TRUE)
   t <- system.time({
-    fit <- withCallingHandlers({
-      if (variant == "old") {
-        fusedLassoProximal(
-          data$X_train, data$y_train, data$groups_train,
-          lambda = lambda, gamma = gamma, G = data$G,
-          tol = tol, num.it = num_it,
-          intercept = intercept, scaling = scaling,
-          conserve.memory = conserve_memory,
-          c.flag = c_flag_old
-        )
-      } else if (variant == "new") {
-        fusedLassoProximalNewOperator(
-          data$X_train, data$y_train, data$groups_train,
-          lambda = lambda, gamma = gamma, G = data$G,
-          tol = tol, num.it = num_it,
-          intercept = intercept, scaling = scaling,
-          conserve.memory = conserve_memory,
-          edge.block = edge_block
-        )
-      } else {
-        stop("Unknown variant: ", variant)
+    fit <- withCallingHandlers(
+      {
+        if (variant == "old") {
+          fusedLassoProximal(
+            data$X_train, data$y_train, data$groups_train,
+            lambda = lambda, gamma = gamma, G = data$G,
+            tol = tol, num.it = num_it,
+            intercept = intercept, scaling = scaling,
+            conserve.memory = conserve_memory,
+            c.flag = c_flag_old
+          )
+        } else if (variant == "new") {
+          fusedLassoProximalNewOperator(
+            data$X_train, data$y_train, data$groups_train,
+            lambda = lambda, gamma = gamma, G = data$G,
+            tol = tol, num.it = num_it,
+            intercept = intercept, scaling = scaling,
+            conserve.memory = conserve_memory,
+            edge.block = edge_block
+          )
+        } else {
+          stop("Unknown variant: ", variant)
+        }
+      },
+      warning = function(w) {
+        warnings_seen <<- c(warnings_seen, conditionMessage(w))
+        invokeRestart("muffleWarning")
       }
-    }, warning = function(w) {
-      warnings_seen <<- c(warnings_seen, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    })
+    )
   })
 
   yhat_train <- predict_from_beta(fit, data$X_train, data$groups_train)
@@ -206,7 +210,9 @@ argv <- parse_args(commandArgs(trailingOnly = TRUE))
 get_arg <- function(x, key) if (key %in% names(x)) x[[key]] else NULL
 get_opt <- function(key) {
   cli <- get_arg(argv, key)
-  if (!is.null(cli)) return(cli)
+  if (!is.null(cli)) {
+    return(cli)
+  }
   DEFAULTS[[key]]
 }
 
