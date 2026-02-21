@@ -188,7 +188,10 @@ save_grouped <- function(obj, slug) {
   matrix_to_edge_df <- function(G) {
     if (is.null(G)) return(data.frame(from = integer(0), to = integer(0), weight = numeric(0)))
     if (inherits(G, "sparseMatrix")) {
-      trip <- Matrix::summary(G)
+      trip <- tryCatch(Matrix::summary(G), error = function(e) NULL)
+      if (is.null(trip) || !all(c("i", "j", "x") %in% names(trip)) || nrow(trip) == 0L) {
+        return(data.frame(from = integer(0), to = integer(0), weight = numeric(0)))
+      }
       keep <- trip$i < trip$j & trip$x != 0
       data.frame(
         from = trip$i[keep],
@@ -247,6 +250,87 @@ save_grouped <- function(obj, slug) {
   )
 
   data_csv
+}
+
+finalize_grouped_matrix <- function(
+  X, y, group_raw, dataset_name, source,
+  y_col = "y", group_col = "group_raw",
+  min_group_size = 5L, max_rows = 200000L, dense_limit = 400L,
+  extra_meta = list()
+) {
+  X <- as.matrix(X)
+  storage.mode(X) <- "double"
+  y <- as.numeric(y)
+  group_raw <- as.character(group_raw)
+
+  if (nrow(X) != length(y) || nrow(X) != length(group_raw)) {
+    stop("X/y/group dimension mismatch.")
+  }
+  if (is.null(colnames(X))) {
+    colnames(X) <- paste0("x", seq_len(ncol(X)))
+  }
+
+  keep <- is.finite(y) & !is.na(group_raw) & nzchar(trimws(group_raw))
+  X <- X[keep, , drop = FALSE]
+  y <- y[keep]
+  group_raw <- group_raw[keep]
+  if (nrow(X) == 0L) stop("No rows after finite y + non-missing group filtering.")
+
+  group_counts <- table(group_raw)
+  good_groups <- names(group_counts[group_counts >= as.integer(min_group_size)])
+  keep <- group_raw %in% good_groups
+  X <- X[keep, , drop = FALSE]
+  y <- y[keep]
+  group_raw <- group_raw[keep]
+  if (nrow(X) == 0L) stop("No rows after min_group_size filtering.")
+
+  if (!is.null(max_rows) && nrow(X) > max_rows) {
+    idx <- sort(sample.int(nrow(X), max_rows))
+    X <- X[idx, , drop = FALSE]
+    y <- y[idx]
+    group_raw <- group_raw[idx]
+  }
+
+  bad_cols <- which(colSums(!is.finite(X)) > 0L)
+  if (length(bad_cols) > 0L) {
+    for (j in bad_cols) {
+      v <- X[, j]
+      good <- is.finite(v)
+      med <- stats::median(v[good], na.rm = TRUE)
+      if (!is.finite(med)) med <- 0
+      v[!good] <- med
+      X[, j] <- v
+    }
+  }
+
+  keep_var <- apply(X, 2L, function(z) stats::sd(z) > 0)
+  X <- X[, keep_var, drop = FALSE]
+  if (ncol(X) == 0L) stop("No non-constant features available.")
+
+  group_fac <- factor(group_raw)
+  groups <- as.integer(group_fac)
+  group_levels <- levels(group_fac)
+  graphs <- build_graphs(length(unique(groups)), dense_limit = dense_limit)
+
+  list(
+    X = X,
+    y = y,
+    groups = groups,
+    group_levels = group_levels,
+    feature_names = colnames(X),
+    G_dense = graphs$G_dense,
+    G_sparse_chain = graphs$G_sparse_chain,
+    meta = c(list(
+      dataset = dataset_name,
+      source = source,
+      n = nrow(X),
+      p = ncol(X),
+      k = length(unique(groups)),
+      y_col = y_col,
+      group_col = group_col,
+      dense_graph_limit = graphs$dense_limit
+    ), extra_meta)
+  )
 }
 
 download_github_raw_if_missing <- function(repo_path, dest) {
@@ -1519,9 +1603,14 @@ prepare_nci60_cellminer_high_dim <- function() {
   list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
 }
 
-prepare_ccle_depmap_gdsc_high_dim <- function() {
-  slug <- "ccle_depmap_gdsc_high_dim"
-  raw_dir <- file.path(raw_root, slug)
+prepare_ccle_depmap_gdsc_high_dim_variant <- function(
+  slug,
+  dataset_name,
+  group_priority = c("lineage_first", "primary_first"),
+  fixed_target = NULL
+) {
+  group_priority <- match.arg(group_priority)
+  raw_dir <- file.path(raw_root, "ccle_depmap_gdsc_high_dim")
   dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
 
   catalog_path <- file.path(raw_dir, "depmap_data_catalog.json")
@@ -1593,7 +1682,17 @@ prepare_ccle_depmap_gdsc_high_dim <- function() {
   if (!is.finite(score[best_idx])) {
     stop("Could not select a suitable GDSC drug target.")
   }
-  target_selected <- as.character(drug_stats$DRUG_NAME[best_idx])
+  if (is.null(fixed_target)) {
+    target_selected <- as.character(drug_stats$DRUG_NAME[best_idx])
+    target_selection_mode <- "auto_best_coverage"
+  } else {
+    fixed_target <- trimws(as.character(fixed_target))
+    if (!(fixed_target %in% as.character(drug_stats$DRUG_NAME))) {
+      stop("Requested fixed_target not found in GDSC merged data: ", fixed_target)
+    }
+    target_selected <- fixed_target
+    target_selection_mode <- "fixed"
+  }
 
   y_df <- gdsc_agg[gdsc_agg$DRUG_NAME == target_selected, c("ARXSPAN_ID", "auc"), drop = FALSE]
   names(y_df) <- c("ModelID", "y")
@@ -1606,11 +1705,21 @@ prepare_ccle_depmap_gdsc_high_dim <- function() {
   model_sub$ModelID <- as.character(model_sub$ModelID)
   d <- merge(d, model_sub, by = "ModelID", all.x = TRUE)
 
-  group_raw <- as.character(d$OncotreeLineage)
-  miss <- is.na(group_raw) | !nzchar(group_raw)
-  group_raw[miss] <- as.character(d$OncotreePrimaryDisease[miss])
-  miss <- is.na(group_raw) | !nzchar(group_raw)
-  group_raw[miss] <- as.character(d$TissueOrigin[miss])
+  if (identical(group_priority, "lineage_first")) {
+    group_raw <- as.character(d$OncotreeLineage)
+    miss <- is.na(group_raw) | !nzchar(group_raw)
+    group_raw[miss] <- as.character(d$OncotreePrimaryDisease[miss])
+    miss <- is.na(group_raw) | !nzchar(group_raw)
+    group_raw[miss] <- as.character(d$TissueOrigin[miss])
+    grouping_basis <- "OncotreeLineage -> OncotreePrimaryDisease -> TissueOrigin"
+  } else {
+    group_raw <- as.character(d$OncotreePrimaryDisease)
+    miss <- is.na(group_raw) | !nzchar(group_raw)
+    group_raw[miss] <- as.character(d$OncotreeLineage[miss])
+    miss <- is.na(group_raw) | !nzchar(group_raw)
+    group_raw[miss] <- as.character(d$TissueOrigin[miss])
+    grouping_basis <- "OncotreePrimaryDisease -> OncotreeLineage -> TissueOrigin"
+  }
   miss <- is.na(group_raw) | !nzchar(group_raw)
   group_raw[miss] <- "unknown"
   d$group_raw <- group_raw
@@ -1628,12 +1737,14 @@ prepare_ccle_depmap_gdsc_high_dim <- function() {
     y_col = "y",
     group_col = "group_raw",
     feature_cols = feature_cols,
-    dataset_name = "CCLE + DepMap Expression + Sanger GDSC (single-drug)",
+    dataset_name = dataset_name,
     source = "https://depmap.org/portal/download/all/",
     min_group_size = 5L,
     max_rows = NULL,
     extra_meta = list(
       target_selected = target_selected,
+      target_selection_mode = target_selection_mode,
+      grouping_basis = grouping_basis,
       expression_file = expr_file,
       expression_release = expr_release,
       response_file = gdsc_file,
@@ -1645,6 +1756,33 @@ prepare_ccle_depmap_gdsc_high_dim <- function() {
 
   out <- save_grouped(obj, slug)
   list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_ccle_depmap_gdsc_high_dim <- function() {
+  prepare_ccle_depmap_gdsc_high_dim_variant(
+    slug = "ccle_depmap_gdsc_high_dim",
+    dataset_name = "CCLE + DepMap Expression + Sanger GDSC (single-drug)",
+    group_priority = "lineage_first",
+    fixed_target = NULL
+  )
+}
+
+prepare_ccle_depmap_gdsc_primary_disease_high_dim <- function() {
+  prepare_ccle_depmap_gdsc_high_dim_variant(
+    slug = "ccle_depmap_gdsc_primary_disease_high_dim",
+    dataset_name = "CCLE + DepMap Expression + Sanger GDSC (single-drug, primary disease groups)",
+    group_priority = "primary_first",
+    fixed_target = NULL
+  )
+}
+
+prepare_ccle_depmap_gdsc_primary_disease_vorinostat_high_dim <- function() {
+  prepare_ccle_depmap_gdsc_high_dim_variant(
+    slug = "ccle_depmap_gdsc_primary_disease_vorinostat_high_dim",
+    dataset_name = "CCLE + DepMap Expression + Sanger GDSC (VORINOSTAT, primary disease groups)",
+    group_priority = "primary_first",
+    fixed_target = "VORINOSTAT"
+  )
 }
 
 prepare_tcga_pan_cancer_high_dim <- function() {
@@ -1965,30 +2103,826 @@ prepare_abide_connectome_high_dim <- function() {
   list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
 }
 
+prepare_gtv_swus_obs_high_dim <- function() {
+  slug <- "gtv_swus_obs_high_dim"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+
+  base_urls <- list(
+    X_obs = "https://raw.githubusercontent.com/Willett-Group/gtv_forecasting/master/paper/data/X_obs.csv",
+    y_avg = "https://raw.githubusercontent.com/Willett-Group/gtv_forecasting/master/paper/data/y_avg.csv",
+    sst_columns = "https://raw.githubusercontent.com/Willett-Group/gtv_forecasting/master/paper/data/sst_columns.csv"
+  )
+  local_clone_dir <- file.path(raw_root, "literature_2602", "gtv_forecasting", "paper", "data")
+  local_sources <- list(
+    X_obs = file.path(local_clone_dir, "X_obs.csv"),
+    y_avg = file.path(local_clone_dir, "y_avg.csv"),
+    sst_columns = file.path(local_clone_dir, "sst_columns.csv")
+  )
+
+  copy_or_download <- function(local_src, url, dest) {
+    if (file.exists(local_src)) {
+      file.copy(local_src, dest, overwrite = TRUE)
+      return(dest)
+    }
+    download_if_missing(url, dest)
+  }
+
+  x_path <- file.path(raw_dir, "X_obs.csv")
+  y_path <- file.path(raw_dir, "y_avg.csv")
+  sst_path <- file.path(raw_dir, "sst_columns.csv")
+  copy_or_download(local_sources$X_obs, base_urls$X_obs, x_path)
+  copy_or_download(local_sources$y_avg, base_urls$y_avg, y_path)
+  copy_or_download(local_sources$sst_columns, base_urls$sst_columns, sst_path)
+
+  X_df <- utils::read.csv(x_path, check.names = FALSE, stringsAsFactors = FALSE)
+  y_df <- utils::read.csv(y_path, check.names = FALSE, stringsAsFactors = FALSE)
+  sst_cols <- utils::read.csv(sst_path, check.names = FALSE, stringsAsFactors = FALSE)
+
+  if (nrow(X_df) == 0L || ncol(X_df) == 0L) stop("GTV X_obs is empty.")
+  if (ncol(y_df) < 1L || nrow(y_df) != nrow(X_df)) {
+    stop("GTV y_avg shape mismatch with X_obs.")
+  }
+  if (nrow(sst_cols) != ncol(X_df)) {
+    stop("GTV sst_columns row count does not match X_obs feature count.")
+  }
+
+  years <- seq.int(1941L, by = 1L, length.out = nrow(X_df))
+  group_raw <- paste0("era3yr_", floor((years - min(years)) / 3L) + 1L)
+  y_vec <- suppressWarnings(as.numeric(y_df[[1L]]))
+  if (!all(is.finite(y_vec))) stop("GTV y_avg contains non-finite values.")
+
+  feat_names <- paste0(
+    "sst_",
+    sanitize_name(tolower(as.character(sst_cols$month))),
+    "_lat",
+    sanitize_name(as.character(sst_cols$lat)),
+    "_lon",
+    sanitize_name(as.character(sst_cols$lon))
+  )
+  feat_names <- make.unique(feat_names, sep = "_dup")
+  names(X_df) <- feat_names
+
+  d <- data.frame(y = y_vec, group_raw = group_raw, X_df, check.names = FALSE, stringsAsFactors = FALSE)
+
+  obj <- finalize_grouped(
+    d,
+    y_col = "y",
+    group_col = "group_raw",
+    feature_cols = feat_names,
+    dataset_name = "GTV SWUS seasonal forecasting (X_obs/y_avg, 3-year groups)",
+    source = "https://github.com/Willett-Group/gtv_forecasting",
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = "y_avg",
+      grouping_rule = "3-year bins over 1941-2019 observations",
+      x_source = "X_obs.csv",
+      y_source = "y_avg.csv",
+      feature_meta = "sst_columns.csv",
+      p_gt_n = TRUE,
+      regime = "real_high_dim"
+    )
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_csv_grouped_dataset <- function(
+  slug,
+  url,
+  dataset_name,
+  source,
+  y_col,
+  group_col,
+  feature_cols = NULL,
+  drop_cols = c("rownames", "Unnamed: 0"),
+  min_group_size = 3L,
+  max_rows = NULL,
+  extra_meta = list()
+) {
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  csv_path <- file.path(raw_dir, "source.csv")
+  download_if_missing(url, csv_path)
+  d <- utils::read.csv(csv_path, check.names = FALSE, stringsAsFactors = FALSE)
+
+  present_drop <- intersect(drop_cols, names(d))
+  if (length(present_drop) > 0L) {
+    d <- d[, setdiff(names(d), present_drop), drop = FALSE]
+  }
+
+  if (!(y_col %in% names(d))) stop("Target column missing: ", y_col)
+  if (!(group_col %in% names(d))) stop("Group column missing: ", group_col)
+
+  if (is.null(feature_cols)) {
+    feature_cols <- setdiff(names(d), c(y_col, group_col))
+  } else {
+    feature_cols <- intersect(feature_cols, names(d))
+  }
+  if (length(feature_cols) == 0L) stop("No feature columns available for ", slug, ".")
+
+  obj <- finalize_grouped(
+    d,
+    y_col = y_col,
+    group_col = group_col,
+    feature_cols = feature_cols,
+    dataset_name = dataset_name,
+    source = source,
+    min_group_size = min_group_size,
+    max_rows = max_rows,
+    extra_meta = extra_meta
+  )
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_radon_minnesota <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "radon_minnesota",
+    url = "https://raw.githubusercontent.com/pymc-devs/pymc-examples/main/examples/data/radon.csv",
+    dataset_name = "Minnesota Radon (PyMC example)",
+    source = "https://github.com/pymc-devs/pymc-examples",
+    y_col = "log_radon",
+    group_col = "county",
+    feature_cols = c("floor", "Uppm", "basement", "room", "county_code"),
+    min_group_size = 2L,
+    extra_meta = list(target_selected = "log_radon")
+  )
+}
+
+prepare_rdatasets_exam_inner_london <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_exam_inner_london",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/mlmRev/Exam.csv",
+    dataset_name = "Inner London Exam Scores (mlmRev::Exam)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "normexam",
+    group_col = "school",
+    feature_cols = c("schgend", "schavg", "vr", "intake", "standLRT", "sex", "type"),
+    min_group_size = 5L,
+    extra_meta = list(target_selected = "normexam")
+  )
+}
+
+prepare_rdatasets_usairlines_cost <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_usairlines_cost",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/AER/USAirlines.csv",
+    dataset_name = "US Airlines Cost Panel (AER::USAirlines)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "cost",
+    group_col = "firm",
+    feature_cols = c("year", "output", "price", "load"),
+    min_group_size = 5L,
+    extra_meta = list(target_selected = "cost")
+  )
+}
+
+prepare_rdatasets_sleepstudy <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_sleepstudy",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/lme4/sleepstudy.csv",
+    dataset_name = "Sleep Deprivation Reaction Time (lme4::sleepstudy)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "Reaction",
+    group_col = "Subject",
+    feature_cols = c("Days"),
+    min_group_size = 2L,
+    extra_meta = list(target_selected = "Reaction")
+  )
+}
+
+prepare_rdatasets_grunfeld <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_grunfeld",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/plm/Grunfeld.csv",
+    dataset_name = "Grunfeld Investment Panel (plm::Grunfeld)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "inv",
+    group_col = "firm",
+    feature_cols = c("year", "value", "capital"),
+    min_group_size = 5L,
+    extra_meta = list(target_selected = "inv")
+  )
+}
+
+prepare_rdatasets_fatalities <- function() {
+  url <- "https://vincentarelbundock.github.io/Rdatasets/csv/AER/Fatalities.csv"
+  slug <- "rdatasets_fatalities"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  csv_path <- file.path(raw_dir, "source.csv")
+  download_if_missing(url, csv_path)
+  d <- utils::read.csv(csv_path, check.names = FALSE, stringsAsFactors = FALSE)
+  feature_cols <- setdiff(names(d), c("rownames", "state", "fatal"))
+  obj <- finalize_grouped(
+    d,
+    y_col = "fatal",
+    group_col = "state",
+    feature_cols = feature_cols,
+    dataset_name = "US Traffic Fatalities Panel (AER::Fatalities)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    min_group_size = 5L,
+    max_rows = NULL,
+    extra_meta = list(target_selected = "fatal")
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_rdatasets_cigar <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_cigar",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/plm/Cigar.csv",
+    dataset_name = "Cigarette Sales Panel (plm::Cigar)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "sales",
+    group_col = "state",
+    feature_cols = c("year", "price", "pop", "pop16", "cpi", "ndi", "pimin"),
+    min_group_size = 5L,
+    extra_meta = list(target_selected = "sales")
+  )
+}
+
+prepare_rdatasets_crime4 <- function() {
+  url <- "https://vincentarelbundock.github.io/Rdatasets/csv/wooldridge/crime4.csv"
+  slug <- "rdatasets_crime4"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  csv_path <- file.path(raw_dir, "source.csv")
+  download_if_missing(url, csv_path)
+  d <- utils::read.csv(csv_path, check.names = FALSE, stringsAsFactors = FALSE)
+  feature_cols <- setdiff(names(d), c("rownames", "county", "crmrte"))
+  obj <- finalize_grouped(
+    d,
+    y_col = "crmrte",
+    group_col = "county",
+    feature_cols = feature_cols,
+    dataset_name = "Cornwell-Trumbull Crime Panel (wooldridge::crime4)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    min_group_size = 5L,
+    max_rows = NULL,
+    extra_meta = list(target_selected = "crmrte")
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_rdatasets_produc <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_produc",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/plm/Produc.csv",
+    dataset_name = "US Public Capital Panel (plm::Produc)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "gsp",
+    group_col = "state",
+    feature_cols = c("year", "region", "pcap", "hwy", "water", "util", "pc", "emp", "unemp"),
+    min_group_size = 5L,
+    extra_meta = list(target_selected = "gsp")
+  )
+}
+
+prepare_rdatasets_orthodont <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_orthodont",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/nlme/Orthodont.csv",
+    dataset_name = "Orthodont Growth (nlme::Orthodont)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "distance",
+    group_col = "Subject",
+    feature_cols = c("age", "Sex"),
+    min_group_size = 2L,
+    extra_meta = list(target_selected = "distance")
+  )
+}
+
+prepare_rdatasets_guns <- function() {
+  url <- "https://vincentarelbundock.github.io/Rdatasets/csv/AER/Guns.csv"
+  slug <- "rdatasets_guns"
+  raw_dir <- file.path(raw_root, slug)
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  csv_path <- file.path(raw_dir, "source.csv")
+  download_if_missing(url, csv_path)
+  d <- utils::read.csv(csv_path, check.names = FALSE, stringsAsFactors = FALSE)
+  feature_cols <- setdiff(names(d), c("rownames", "state", "violent"))
+  obj <- finalize_grouped(
+    d,
+    y_col = "violent",
+    group_col = "state",
+    feature_cols = feature_cols,
+    dataset_name = "US Gun Law Panel (AER::Guns, violent crime target)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    min_group_size = 5L,
+    max_rows = NULL,
+    extra_meta = list(target_selected = "violent")
+  )
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)))
+}
+
+prepare_rdatasets_hsb82 <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_hsb82",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/mlmRev/Hsb82.csv",
+    dataset_name = "High School and Beyond 1982 (mlmRev::Hsb82)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "mAch",
+    group_col = "school",
+    feature_cols = c("minrty", "sx", "ses", "meanses", "sector", "cses"),
+    min_group_size = 5L,
+    extra_meta = list(target_selected = "mAch")
+  )
+}
+
+prepare_rdatasets_empluk <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_empluk",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/plm/EmplUK.csv",
+    dataset_name = "UK Firm Employment Panel (plm::EmplUK)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "emp",
+    group_col = "firm",
+    feature_cols = c("year", "sector", "wage", "capital", "output"),
+    min_group_size = 5L,
+    extra_meta = list(target_selected = "emp")
+  )
+}
+
+prepare_rdatasets_ratpupweight <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_ratpupweight",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/nlme/RatPupWeight.csv",
+    dataset_name = "Rat Pup Birth Weight (nlme::RatPupWeight)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "weight",
+    group_col = "Litter",
+    feature_cols = c("sex", "Lsize", "Treatment"),
+    min_group_size = 2L,
+    extra_meta = list(target_selected = "weight")
+  )
+}
+
+prepare_rdatasets_dietox <- function() {
+  prepare_csv_grouped_dataset(
+    slug = "rdatasets_dietox",
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/geepack/dietox.csv",
+    dataset_name = "Pig Growth Trajectories (geepack::dietox)",
+    source = "https://vincentarelbundock.github.io/Rdatasets/",
+    y_col = "Weight",
+    group_col = "Pig",
+    feature_cols = c("Evit", "Cu", "Litter", "Start", "Feed", "Time"),
+    min_group_size = 2L,
+    extra_meta = list(target_selected = "Weight")
+  )
+}
+
+orcestra_pick_col <- function(cols, candidates) {
+  if (length(cols) == 0L || length(candidates) == 0L) return(NULL)
+  cols_l <- tolower(cols)
+  for (cand in candidates) {
+    idx <- which(cols_l == tolower(cand))
+    if (length(idx) > 0L) return(cols[idx[1L]])
+  }
+  NULL
+}
+
+orcestra_download_pset_if_missing <- function(pset_name, dest_path) {
+  if (file.exists(dest_path)) return(dest_path)
+  canon <- jsonlite::fromJSON("https://www.orcestra.ca/api/pset/canonical")
+  if (!is.data.frame(canon) || !all(c("name", "downloadLink") %in% names(canon))) {
+    stop("ORCESTRA canonical API format is unexpected.")
+  }
+  idx <- which(as.character(canon$name) == pset_name)
+  if (length(idx) == 0L) stop("ORCESTRA canonical API does not include PSet: ", pset_name)
+  dl <- as.character(canon$downloadLink[idx[1L]])
+  if (is.na(dl) || !nzchar(dl)) stop("Missing ORCESTRA download link for PSet: ", pset_name)
+  download_if_missing(dl, dest_path)
+}
+
+orcestra_pick_feature_block <- function(ps) {
+  keys <- names(PharmacoGx::molecularProfilesSlot(ps))
+  if (length(keys) == 0L) return(list(key = NA_character_, p = NA_integer_))
+
+  get_p <- function(key) {
+    fi <- tryCatch(PharmacoGx::featureInfo(ps, mDataType = key), error = function(e) NULL)
+    if (!is.null(fi)) return(as.integer(nrow(fi)))
+    mp <- tryCatch(PharmacoGx::molecularProfiles(ps, mDataType = key), error = function(e) NULL)
+    if (is.null(mp)) return(NA_integer_)
+    as.integer(nrow(mp))
+  }
+
+  preferred <- c("Kallisto_0.46.1.rnaseq", "rnaseq", "rna", "rna_ruv", "microarray")
+  keys_l <- tolower(keys)
+  for (cand in preferred) {
+    idx <- which(keys_l == tolower(cand))
+    if (length(idx) == 0L) next
+    key <- keys[idx[1L]]
+    p <- get_p(key)
+    if (is.finite(p) && p > 0L) return(list(key = key, p = p))
+  }
+
+  score <- rep(0, length(keys))
+  score <- score + ifelse(grepl("rnaseq|^rna$|rna_", keys_l), 100, 0)
+  score <- score + ifelse(grepl("microarray|expression", keys_l), 60, 0)
+  score <- score - ifelse(grepl("isoform", keys_l), 40, 0)
+  score <- score - ifelse(grepl("counts", keys_l), 10, 0)
+  score <- score - ifelse(grepl("cnv|mutation|methyl|mirna|atac|acgh|variant", keys_l), 25, 0)
+  ord <- order(score, decreasing = TRUE)
+  for (i in ord) {
+    key <- keys[i]
+    p <- get_p(key)
+    if (is.finite(p) && p > 0L) return(list(key = key, p = p))
+  }
+
+  key <- keys[ord[1L]]
+  list(key = key, p = get_p(key))
+}
+
+orcestra_pick_response_measure <- function(measures) {
+  if (length(measures) == 0L) return(NA_character_)
+  preferred <- c(
+    "aac_recomputed", "auc_recomputed", "aac_published", "auc_published",
+    "ic50_recomputed", "ic50_published", "ec50_recomputed", "ec50_published",
+    "gr_aoc_published", "gr50_published", "dss", "hs", "e_inf", "slope_recomputed"
+  )
+  measures_l <- tolower(measures)
+  for (cand in preferred) {
+    idx <- which(measures_l == cand)
+    if (length(idx) > 0L) return(as.character(measures[idx[1L]]))
+  }
+  as.character(measures[1L])
+}
+
+orcestra_extract_sample_drug_response <- function(ps, y_measure) {
+  sinfo <- tryCatch(PharmacoGx::sensitivityInfo(ps), error = function(e) NULL)
+  sprof <- tryCatch(PharmacoGx::sensitivityProfiles(ps), error = function(e) NULL)
+  if (is.null(sinfo) || is.null(sprof) || nrow(sinfo) == 0L || nrow(sprof) == 0L) {
+    stop("No sensitivityInfo/sensitivityProfiles available.")
+  }
+  if (!(y_measure %in% names(sprof))) {
+    stop("Response measure not found in sensitivityProfiles: ", y_measure)
+  }
+  if (nrow(sinfo) != nrow(sprof)) {
+    stop("sensitivityInfo and sensitivityProfiles row counts differ.")
+  }
+
+  sample_col <- orcestra_pick_col(
+    names(sinfo),
+    c("sampleid", "sample_id", "unique.sampleid", "PRISM.sampleid", "depmap_id", "master_ccl_id")
+  )
+  drug_col <- orcestra_pick_col(
+    names(sinfo),
+    c("treatmentid", "treatment_id", "drugid", "drug_id", "compoundid", "compound_id", "inhibitor", "name", "treatment1id")
+  )
+  if (is.null(sample_col)) stop("Could not identify sample id column in sensitivityInfo.")
+  if (is.null(drug_col)) stop("Could not identify drug/treatment column in sensitivityInfo.")
+
+  d <- data.frame(
+    sample_id = trimws(as.character(sinfo[[sample_col]])),
+    drug_id = trimws(as.character(sinfo[[drug_col]])),
+    y = suppressWarnings(as.numeric(sprof[[y_measure]])),
+    stringsAsFactors = FALSE
+  )
+  d <- d[is.finite(d$y) & nzchar(d$sample_id) & nzchar(d$drug_id), , drop = FALSE]
+  if (nrow(d) == 0L) stop("No finite sensitivity rows for measure: ", y_measure)
+
+  agg <- stats::aggregate(y ~ sample_id + drug_id, data = d, FUN = mean)
+  if (nrow(agg) == 0L) stop("No usable aggregated sensitivity rows.")
+
+  n_by_drug <- stats::aggregate(y ~ drug_id, data = agg, FUN = length)
+  names(n_by_drug)[2] <- "n"
+  sd_by_drug <- stats::aggregate(y ~ drug_id, data = agg, FUN = function(z) stats::sd(z, na.rm = TRUE))
+  names(sd_by_drug)[2] <- "sd"
+  drug_stats <- merge(n_by_drug, sd_by_drug, by = "drug_id", all = TRUE)
+  n_samples <- length(unique(agg$sample_id))
+  min_cover <- max(20L, ceiling(0.15 * n_samples))
+  score <- ifelse(drug_stats$n >= min_cover & is.finite(drug_stats$sd), drug_stats$n + 1e-6 * drug_stats$sd, -Inf)
+  if (!any(is.finite(score))) {
+    score <- ifelse(drug_stats$n >= min_cover, drug_stats$n, -Inf)
+  }
+  if (!any(is.finite(score))) {
+    stop("No drug has enough per-sample response coverage (min_cover=", min_cover, ").")
+  }
+  best_idx <- which.max(score)
+  selected_drug <- as.character(drug_stats$drug_id[best_idx])
+  y_df <- agg[agg$drug_id == selected_drug, c("sample_id", "y"), drop = FALSE]
+  y_df <- stats::aggregate(y ~ sample_id, data = y_df, FUN = mean)
+  if (nrow(y_df) == 0L) stop("No per-sample response rows for selected drug.")
+
+  list(
+    y_df = y_df,
+    selected_drug = selected_drug,
+    sample_col = sample_col,
+    drug_col = drug_col,
+    n_rows = nrow(d),
+    n_samples = nrow(y_df),
+    min_cover = min_cover
+  )
+}
+
+orcestra_group_vector <- function(ps, sample_ids, preferred_group_col = NULL) {
+  normalize_id <- function(z) tolower(trimws(as.character(z)))
+  sample_ids <- normalize_id(sample_ids)
+  si <- tryCatch(PharmacoGx::sampleInfo(ps), error = function(e) NULL)
+  if (is.null(si) || nrow(si) == 0L) stop("sampleInfo is empty.")
+
+  if (!is.null(preferred_group_col) && preferred_group_col %in% names(si)) {
+    group_col <- preferred_group_col
+  } else {
+    group_col <- orcestra_pick_col(
+      names(si),
+      c(
+        "tissueid", "Subtype", "Diagnosis", "TYPE", "specificDxAtInclusion",
+        "primary_tissue", "primary_disease", "oncotreeprimarydisease", "lineage",
+        "Cellosaurus.Disease.Type", "sampleid"
+      )
+    )
+  }
+  if (is.null(group_col)) stop("Could not identify grouped-regression group column from sampleInfo.")
+
+  sample_col <- orcestra_pick_col(
+    names(si),
+    c("sampleid", "sample_id", "unique.sampleid", "PRISM.sampleid", "master_ccl_id", "main.Sample.ID")
+  )
+  if (!is.null(sample_col)) {
+    sid <- normalize_id(si[[sample_col]])
+  } else {
+    sid <- tryCatch(normalize_id(PharmacoGx::sampleNames(ps)), error = function(e) character(0))
+    if (length(sid) != nrow(si)) {
+      stop("Could not align sampleInfo rows to sample IDs for grouping.")
+    }
+  }
+
+  grp <- as.character(si[[group_col]])
+  keep <- !is.na(sid) & nzchar(sid)
+  sid <- sid[keep]
+  grp <- grp[keep]
+  if (length(sid) == 0L) stop("No valid sample IDs available in sampleInfo.")
+  if (any(duplicated(sid))) {
+    keep_first <- !duplicated(sid)
+    sid <- sid[keep_first]
+    grp <- grp[keep_first]
+  }
+  gmap <- setNames(grp, sid)
+  group_raw <- unname(gmap[sample_ids])
+  list(group_raw = group_raw, group_col = group_col, sample_col = sample_col %||% "sampleNames(ps)")
+}
+
+prepare_orcestra_pset_high_dim <- function(
+  pset_name,
+  slug,
+  dataset_name,
+  doi,
+  preferred_group_col = NULL
+) {
+  if (!requireNamespace("PharmacoGx", quietly = TRUE)) {
+    stop("ORCESTRA preprocessing requires package 'PharmacoGx'. Install it and rerun.")
+  }
+
+  raw_dir <- file.path(raw_root, "literature_expanded_psets")
+  dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  pset_path <- file.path(raw_dir, paste0(pset_name, ".rds"))
+  orcestra_download_pset_if_missing(pset_name, pset_path)
+
+  ps <- suppressWarnings(BiocGenerics::updateObject(readRDS(pset_path)))
+  feat <- orcestra_pick_feature_block(ps)
+  if (is.na(feat$key) || !is.finite(feat$p) || feat$p <= 0L) {
+    stop("No non-empty molecular feature block found for ", pset_name, ".")
+  }
+
+  X_raw <- tryCatch(PharmacoGx::molecularProfiles(ps, mDataType = feat$key), error = function(e) NULL)
+  if (is.null(X_raw)) stop("Failed to load molecular profile block: ", feat$key)
+  X_raw <- as.matrix(X_raw)
+  if (nrow(X_raw) == 0L || ncol(X_raw) == 0L) {
+    stop("Selected molecular profile block is empty: ", feat$key)
+  }
+  X <- t(X_raw)
+  storage.mode(X) <- "double"
+  feature_names <- rownames(X_raw)
+  if (is.null(feature_names)) feature_names <- paste0("f", seq_len(nrow(X_raw)))
+  colnames(X) <- make.unique(as.character(feature_names), sep = "_dup")
+  normalize_id <- function(z) tolower(trimws(as.character(z)))
+
+  sample_ids <- character(0)
+  se <- tryCatch(PharmacoGx::molecularProfilesSlot(ps)[[feat$key]], error = function(e) NULL)
+  if (!is.null(se)) {
+    cd <- tryCatch(as.data.frame(SummarizedExperiment::colData(se), stringsAsFactors = FALSE), error = function(e) NULL)
+    if (!is.null(cd) && nrow(cd) == nrow(X)) {
+      sid_col <- orcestra_pick_col(
+        names(cd),
+        c("sampleid", "sample_id", "unique.sampleid", "PRISM.sampleid", "depmap_id", "master_ccl_id", "Cell.Line", "MODEL")
+      )
+      if (!is.null(sid_col)) {
+        sid <- trimws(as.character(cd[[sid_col]]))
+        if (sum(!is.na(sid) & nzchar(sid)) > 0L) {
+          sample_ids <- sid
+        }
+      }
+    }
+  }
+  if (length(sample_ids) != nrow(X)) {
+    sample_ids <- colnames(X_raw)
+  }
+  if (is.null(sample_ids) || length(sample_ids) != nrow(X)) {
+    sample_ids <- tryCatch(PharmacoGx::sampleNames(ps), error = function(e) character(0))
+    if (length(sample_ids) != nrow(X)) sample_ids <- paste0("sample_", seq_len(nrow(X)))
+  }
+  sample_ids <- trimws(as.character(sample_ids))
+  rownames(X) <- sample_ids
+  if (any(duplicated(sample_ids))) {
+    keep_first <- !duplicated(sample_ids)
+    X <- X[keep_first, , drop = FALSE]
+    sample_ids <- sample_ids[keep_first]
+  }
+
+  measures <- tryCatch(PharmacoGx::sensitivityMeasures(ps), error = function(e) character(0))
+  y_measure <- orcestra_pick_response_measure(measures)
+  if (is.na(y_measure)) {
+    stop("No sensitivity measures available for ", pset_name, ".")
+  }
+  y_info <- orcestra_extract_sample_drug_response(ps, y_measure)
+  y_df <- y_info$y_df
+  y_df$sample_id <- normalize_id(y_df$sample_id)
+  y_df <- y_df[is.finite(y_df$y) & nzchar(y_df$sample_id), , drop = FALSE]
+  if (nrow(y_df) == 0L) stop("No finite per-sample response values after aggregation.")
+  y_df <- stats::aggregate(y ~ sample_id, data = y_df, FUN = mean)
+
+  sample_ids_norm <- normalize_id(sample_ids)
+  x_index <- seq_along(sample_ids_norm)
+  names(x_index) <- sample_ids_norm
+  idx <- x_index[y_df$sample_id]
+  keep <- !is.na(idx)
+  if (!any(keep)) {
+    stop("No overlap between molecular profile sample IDs and sensitivity sample IDs.")
+  }
+  y_df <- y_df[keep, , drop = FALSE]
+  idx <- as.integer(idx[keep])
+  X_match <- X[idx, , drop = FALSE]
+  sample_match <- y_df$sample_id
+
+  grp_info <- orcestra_group_vector(ps, sample_match, preferred_group_col = preferred_group_col)
+  source <- sprintf("https://doi.org/%s", doi)
+  obj <- finalize_grouped_matrix(
+    X = X_match,
+    y = y_df$y,
+    group_raw = grp_info$group_raw,
+    dataset_name = dataset_name,
+    source = source,
+    y_col = y_measure,
+    group_col = grp_info$group_col,
+    min_group_size = 2L,
+    max_rows = NULL,
+    extra_meta = list(
+      target_selected = y_info$selected_drug,
+      target_selection_mode = "auto_best_coverage",
+      pset_name = pset_name,
+      pset_doi = doi,
+      feature_block = feat$key,
+      response_measure = y_measure,
+      response_sample_col = y_info$sample_col,
+      response_drug_col = y_info$drug_col,
+      response_rows_total = y_info$n_rows,
+      response_sample_n = y_info$n_samples,
+      response_min_cover = y_info$min_cover,
+      grouping_sample_col = grp_info$sample_col
+    )
+  )
+  obj$meta$p_gt_n <- is.finite(obj$meta$p) && is.finite(obj$meta$n) && (obj$meta$p > obj$meta$n)
+  obj$meta$regime <- if (isTRUE(obj$meta$p_gt_n)) "real_high_dim" else "real_standard"
+
+  out <- save_grouped(obj, slug)
+  list(path = out, n = nrow(obj$X), p = ncol(obj$X), k = length(unique(obj$groups)), target = y_info$selected_drug)
+}
+
+prepare_orcestra_uhnbreast_2019_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "UHNBreast_2019",
+    slug = "orcestra_uhnbreast_2019_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet UHNBreast_2019",
+    doi = "10.5281/zenodo.7826860",
+    preferred_group_col = "tissueid"
+  )
+}
+
+prepare_orcestra_pdtx_2019_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "PDTX_2019",
+    slug = "orcestra_pdtx_2019_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet PDTX_2019",
+    doi = "10.5281/zenodo.7826875",
+    preferred_group_col = "TYPE"
+  )
+}
+
+prepare_orcestra_gcsi_2019_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "gCSI_2019",
+    slug = "orcestra_gcsi_2019_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet gCSI_2019",
+    doi = "10.5281/zenodo.7829857",
+    preferred_group_col = "tissueid"
+  )
+}
+
+prepare_orcestra_gray_2017_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "GRAY_2017",
+    slug = "orcestra_gray_2017_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet GRAY_2017",
+    doi = "10.5281/zenodo.7826847",
+    preferred_group_col = "tissueid"
+  )
+}
+
+prepare_orcestra_beataml_2018_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "BeatAML_2018",
+    slug = "orcestra_beataml_2018_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet BeatAML_2018",
+    doi = "10.5281/zenodo.7829853",
+    preferred_group_col = "specificDxAtInclusion"
+  )
+}
+
+prepare_orcestra_tavor_2020_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "Tavor_2020",
+    slug = "orcestra_tavor_2020_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet Tavor_2020",
+    doi = "10.5281/zenodo.5979590",
+    preferred_group_col = "Diagnosis"
+  )
+}
+
+prepare_orcestra_tcl38_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "TCL38",
+    slug = "orcestra_tcl38_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet TCL38",
+    doi = "10.5281/zenodo.14733210",
+    preferred_group_col = "Subtype"
+  )
+}
+
+prepare_orcestra_gbm_scr2_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "GBM_scr2",
+    slug = "orcestra_gbm_scr2_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet GBM_scr2",
+    doi = "10.5281/zenodo.7829873",
+    preferred_group_col = "Subtype"
+  )
+}
+
+prepare_orcestra_ctrpv2_2015_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "CTRPv2_2015",
+    slug = "orcestra_ctrpv2_2015_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet CTRPv2_2015",
+    doi = "10.5281/zenodo.7826870",
+    preferred_group_col = "tissueid"
+  )
+}
+
+prepare_orcestra_prism_2020_high_dim <- function() {
+  prepare_orcestra_pset_high_dim(
+    pset_name = "PRISM_2020",
+    slug = "orcestra_prism_2020_high_dim",
+    dataset_name = "ORCESTRA PharmacoSet PRISM_2020",
+    doi = "10.5281/zenodo.7826864",
+    preferred_group_col = "tissueid"
+  )
+}
+
 dataset_fns <- list(
   communities_crime = prepare_communities,
-  wine_quality = prepare_wine_quality,
-  student_performance = prepare_student_performance,
   beijing_air_quality = prepare_beijing_air,
   electricity_load = prepare_electricity,
   owid_co2 = prepare_owid_co2,
   world_bank_wdi = prepare_world_bank_wdi,
-  nyc_tlc = prepare_nyc_tlc,
-  noaa_ghcn = prepare_noaa_ghcn,
   countyplus = prepare_countyplus,
   sarcos_openml = prepare_sarcos_openml,
   school_ilea = prepare_school_ilea,
-  nir_corn_high_dim = prepare_nir_corn,
-  nir_tablets_high_dim = prepare_nir_tablets_high_dim,
-  nir_tablets_hardness_high_dim = prepare_nir_tablets_hardness_high_dim,
-  swri_cn_high_dim = prepare_swri_cn_high_dim,
-  swri_bp50_high_dim = prepare_swri_bp50_high_dim,
-  swri_d4052_high_dim = prepare_swri_d4052_high_dim,
-  swri_freeze_high_dim = prepare_swri_freeze_high_dim,
-  swri_total_high_dim = prepare_swri_total_high_dim,
-  swri_visc_high_dim = prepare_swri_visc_high_dim,
-  nci60_cellminer_high_dim = prepare_nci60_cellminer_high_dim,
   ccle_depmap_gdsc_high_dim = prepare_ccle_depmap_gdsc_high_dim,
+  ccle_depmap_gdsc_primary_disease_high_dim = prepare_ccle_depmap_gdsc_primary_disease_high_dim,
+  ccle_depmap_gdsc_primary_disease_vorinostat_high_dim = prepare_ccle_depmap_gdsc_primary_disease_vorinostat_high_dim,
+  radon_minnesota = prepare_radon_minnesota,
+  rdatasets_exam_inner_london = prepare_rdatasets_exam_inner_london,
+  rdatasets_grunfeld = prepare_rdatasets_grunfeld,
+  rdatasets_fatalities = prepare_rdatasets_fatalities,
+  rdatasets_cigar = prepare_rdatasets_cigar,
+  rdatasets_crime4 = prepare_rdatasets_crime4,
+  rdatasets_produc = prepare_rdatasets_produc,
+  rdatasets_guns = prepare_rdatasets_guns,
+  rdatasets_hsb82 = prepare_rdatasets_hsb82,
+  rdatasets_empluk = prepare_rdatasets_empluk,
+  rdatasets_ratpupweight = prepare_rdatasets_ratpupweight,
+  rdatasets_dietox = prepare_rdatasets_dietox,
+  orcestra_gcsi_2019_high_dim = prepare_orcestra_gcsi_2019_high_dim,
+  orcestra_beataml_2018_high_dim = prepare_orcestra_beataml_2018_high_dim,
   tcga_pan_cancer_high_dim = prepare_tcga_pan_cancer_high_dim,
   abide_connectome_high_dim = prepare_abide_connectome_high_dim
 )
@@ -2100,7 +3034,7 @@ build_summary_from_processed <- function(processed_root) {
     if (dataset_slug == "school_ilea") {
       return(list(
         license_status = "open",
-        license_name = "GPL-2 | GPL-3",
+        license_name = "GPL (>= 2)",
         license_link = "https://cran.r-project.org/package=nlme",
         license_notes = "Derived from datasets shipped in CRAN nlme package."
       ))
@@ -2151,7 +3085,74 @@ build_summary_from_processed <- function(processed_root) {
       ))
     }
 
-    if (dataset_slug == "ccle_depmap_gdsc_high_dim") {
+    if (dataset_slug == "gtv_swus_obs_high_dim") {
+      return(list(
+        license_status = "unclear_contact_required",
+        license_name = "No explicit repository data license",
+        license_link = paste(
+          "https://github.com/Willett-Group/gtv_forecasting",
+          "https://psl.noaa.gov/data/gridded/data.cobe2.html",
+          "https://www.ncei.noaa.gov/pub/data/cirs/climdiv/",
+          sep = "; "
+        ),
+        license_notes = paste(
+          "Repository provides processed files but no explicit downstream data license;",
+          "verify reuse terms against the upstream NOAA/COBE/CESM sources before redistribution."
+        )
+      ))
+    }
+
+    if (dataset_slug == "radon_minnesota") {
+      return(list(
+        license_status = "mixed_open_with_exceptions",
+        license_name = "Repository-provided example data (verify upstream terms)",
+        license_link = "https://github.com/pymc-devs/pymc-examples",
+        license_notes = "Distributed via PyMC examples repository; verify original radon data reuse terms for redistribution."
+      ))
+    }
+
+    rdatasets_pkg_map <- list(
+      rdatasets_usairlines_cost = list(pkg = "AER", license = "GPL-2 | GPL-3", link = "https://cran.r-project.org/package=AER"),
+      rdatasets_fatalities = list(pkg = "AER", license = "GPL-2 | GPL-3", link = "https://cran.r-project.org/package=AER"),
+      rdatasets_guns = list(pkg = "AER", license = "GPL-2 | GPL-3", link = "https://cran.r-project.org/package=AER"),
+      rdatasets_grunfeld = list(pkg = "plm", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=plm"),
+      rdatasets_cigar = list(pkg = "plm", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=plm"),
+      rdatasets_produc = list(pkg = "plm", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=plm"),
+      rdatasets_empluk = list(pkg = "plm", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=plm"),
+      rdatasets_exam_inner_london = list(pkg = "mlmRev", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=mlmRev"),
+      rdatasets_hsb82 = list(pkg = "mlmRev", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=mlmRev"),
+      rdatasets_sleepstudy = list(pkg = "lme4", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=lme4"),
+      rdatasets_crime4 = list(pkg = "wooldridge", license = "GPL-3", link = "https://cran.r-project.org/package=wooldridge"),
+      rdatasets_orthodont = list(pkg = "nlme", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=nlme"),
+      rdatasets_ratpupweight = list(pkg = "nlme", license = "GPL (>= 2)", link = "https://cran.r-project.org/package=nlme"),
+      rdatasets_dietox = list(pkg = "geepack", license = "GPL (>= 3)", link = "https://cran.r-project.org/package=geepack")
+    )
+    if (dataset_slug %in% names(rdatasets_pkg_map)) {
+      rec <- rdatasets_pkg_map[[dataset_slug]]
+      return(list(
+        license_status = "open",
+        license_name = as.character(rec$license),
+        license_link = as.character(rec$link),
+        license_notes = paste0(
+          "License inherited from CRAN package ", rec$pkg,
+          "; dataset accessed via Rdatasets mirror."
+        )
+      ))
+    }
+
+    if (startsWith(dataset_slug, "orcestra_")) {
+      return(list(
+        license_status = "mixed_open_with_exceptions",
+        license_name = "Dataset-specific mixed terms (via ORCESTRA/Zenodo sources)",
+        license_link = "https://www.orcestra.ca/",
+        license_notes = paste(
+          "ORCESTRA hosts harmonized PharmacoSets from multiple upstream studies;",
+          "downstream reuse terms vary by source dataset and may include research/non-commercial limits."
+        )
+      ))
+    }
+
+    if (startsWith(dataset_slug, "ccle_depmap_gdsc_")) {
       return(list(
         license_status = "restricted_noncommercial",
         license_name = "Research/non-commercial terms",
