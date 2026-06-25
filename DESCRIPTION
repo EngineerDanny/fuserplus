@@ -1,14 +1,13 @@
 Package: sparsefusion
-Title: Fused Lasso for High-Dimensional Regression over Groups
+Title: Sparse-Graph Solvers for Grouped Fused Regression
 Version: 0.1.0
 Authors@R: c(
-        person("EngineerDanny", "",
-               email = "agyapongdaniel7777@gmail.com", role = c("aut", "cre"))
+        person("Daniel", "Agyapong",
+               email = "da2343@nau.edu", role = c("aut", "cre"))
     )
-Description: Enables high-dimensional penalized regression across heterogeneous 
-    subgroups. Fusion penalties are used to share information about the linear 
-    parameters across subgroups. The underlying model is described 
-    in detail in Dondelinger and Mukherjee (2017) <arXiv:1611.00953>.
+Description: Fits grouped fused-regression models with L1 and L2 fusion 
+    penalties. Sparse-graph solver variants avoid constructing full-pairwise
+    fusion objects when the modeled graph is sparse.
 Depends: R (>= 3.2.0)
 License: MIT + file LICENSE
 Encoding: UTF-8
@@ -19,7 +18,7 @@ Imports: Matrix, irlba, Rcpp, glmnet, RSpectra
 LinkingTo: Rcpp, RcppEigen
 VignetteBuilder: knitr
 NeedsCompilation: yes
-Maintainer: EngineerDanny <agyapongdaniel7777@gmail.com>
+Maintainer: Daniel Agyapong <da2343@nau.edu>
 Repository: GitHub
 URL: https://github.com/EngineerDanny/sparsefusion
 BugReports: https://github.com/EngineerDanny/sparsefusion/issues
